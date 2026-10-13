@@ -1,0 +1,539 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING
+}
+
+enum MemberStatus {
+  ACTIVE
+  INACTIVE
+  EXITED
+  SUSPENDED
+}
+
+enum CommunityGroupStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum SavingsAccountStatus {
+  ACTIVE
+  FROZEN
+  CLOSED
+}
+
+enum ContributionStatus {
+  PENDING
+  CONFIRMED
+  REVERSED
+}
+
+enum PaymentMethod {
+  CASH
+  MOBILE_MONEY
+  BANK_TRANSFER
+  CARD
+  OTHER
+}
+
+enum LoanApplicationStatus {
+  DRAFT
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum LoanStatus {
+  PENDING
+  APPROVED
+  DISBURSED
+  ACTIVE
+  COMPLETED
+  DEFAULTED
+  WRITTEN_OFF
+  CANCELLED
+}
+
+enum RepaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  REVERSED
+}
+
+enum TransactionType {
+  CONTRIBUTION
+  SAVINGS
+  LOAN_DISBURSEMENT
+  LOAN_REPAYMENT
+  WITHDRAWAL
+  DEPOSIT
+  ADJUSTMENT
+  FEE
+  OTHER
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REVERSED
+}
+
+enum BlockchainTransactionStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+enum MeetingStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  EXCUSED
+  LATE
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  READ
+  FAILED
+}
+
+enum NotificationType {
+  GENERAL
+  CONTRIBUTION
+  LOAN
+  MEETING
+  SECURITY
+  REPAYMENT
+}
+
+enum AuthTokenType {
+  REFRESH
+  PASSWORD_RESET
+}
+model Role {
+  id String @id @default(uuid()) @db.Uuid
+  name String @unique @db.VarChar(50)
+  description String? @db.VarChar(255)
+  users User[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([name])
+}
+
+model SystemSetting {
+  id String @id @default(uuid()) @db.Uuid
+  key String @unique @db.VarChar(100)
+  value Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model User {
+  id String @id @default(uuid()) @db.Uuid
+  memberId String @unique @default(dbgenerated("('LEGACY-'::text || (gen_random_uuid())::text)")) @db.VarChar(50)
+  roleId String @db.Uuid
+  firstName String @db.VarChar(100)
+  lastName String @db.VarChar(100)
+  phone String? @unique @db.VarChar(30)
+  email String? @unique @db.VarChar(255)
+  passwordHash String @db.VarChar(255)
+  blockchainAddress String? @unique @db.VarChar(42)
+  profileImageUrl String? @db.VarChar(500)
+  status UserStatus @default(PENDING)
+  lastLoginAt DateTime?
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  memberships GroupMember[]
+  reviewedLoanApplications LoanApplication[] @relation("LoanApplicationReviewer")
+  managedGroups CommunityGroup[] @relation("GroupManager")
+  organizedMeetings Meeting[] @relation("MeetingOrganizer")
+  attendances Attendance[]
+  notifications Notification[]
+  auditLogs AuditLog[]
+  authTokens AuthToken[]
+  paymentSubmissions PaymentSubmission[] @relation("PaymentOwner")
+  reviewedPayments PaymentSubmission[] @relation("PaymentReviewer")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([roleId])
+  @@index([status])
+  @@index([lastName, firstName])
+}
+
+model AuthToken {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  tokenHash String @unique @db.VarChar(255)
+  type AuthTokenType
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, type])
+  @@index([expiresAt])
+}
+
+model CommunityGroup {
+  id String @id @default(uuid()) @db.Uuid
+  name String @unique @db.VarChar(150)
+  registrationNo String? @unique @db.VarChar(100)
+  location String? @db.VarChar(255)
+  description String? @db.Text
+  contactInfo String? @db.VarChar(255)
+  managerId String? @db.Uuid
+  status CommunityGroupStatus @default(ACTIVE)
+  manager User? @relation("GroupManager", fields: [managerId], references: [id], onDelete: SetNull)
+  members GroupMember[]
+  loanApplications LoanApplication[]
+  loans Loan[]
+  meetings Meeting[]
+  transactions Transaction[]
+  paymentSubmissions PaymentSubmission[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([managerId])
+  @@index([status])
+}
+
+model GroupMember {
+  id String @id @default(uuid()) @db.Uuid
+  groupId String @db.Uuid
+  userId String @db.Uuid
+  memberNumber String @db.VarChar(50)
+  status MemberStatus @default(ACTIVE)
+  joinedAt DateTime @default(now())
+  exitedAt DateTime?
+  group CommunityGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  savingsAccounts SavingsAccount[]
+  contributions Contribution[]
+  loanApplications LoanApplication[]
+  loans Loan[]
+  repayments LoanRepayment[]
+  transactions Transaction[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([groupId, userId])
+  // A person has one current membership in this system. Moving a member must
+  // be an explicit future business rule, rather than an accidental duplicate.
+  @@unique([userId])
+  @@unique([groupId, memberNumber])
+  @@index([userId])
+  @@index([groupId, status])
+}
+
+model SavingsAccount {
+  currency String @default("SLE") @db.Char(3)
+  id String @id @default(uuid()) @db.Uuid
+  groupMemberId String @db.Uuid
+  accountNumber String @unique @db.VarChar(50)
+  balance Decimal @default(0) @db.Decimal(18, 2)
+  status SavingsAccountStatus @default(ACTIVE)
+  openedAt DateTime @default(now())
+  closedAt DateTime?
+  groupMember GroupMember @relation(fields: [groupMemberId], references: [id], onDelete: Restrict)
+  contributions Contribution[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([groupMemberId])
+  @@unique([groupMemberId, currency])
+  @@index([status])
+}
+
+model Contribution {
+  currency String @default("SLE") @db.Char(3)
+  id String @id @default(uuid()) @db.Uuid
+  savingsAccountId String @db.Uuid
+  groupMemberId String @db.Uuid
+  amount Decimal @db.Decimal(18, 2)
+  contributionDate DateTime @default(now())
+  reference String? @unique @db.VarChar(100)
+  notes String? @db.VarChar(500)
+  description String? @db.VarChar(500)
+  paymentMethod PaymentMethod @default(CASH)
+  status ContributionStatus @default(PENDING)
+  savingsAccount SavingsAccount @relation(fields: [savingsAccountId], references: [id], onDelete: Restrict)
+  groupMember GroupMember @relation(fields: [groupMemberId], references: [id], onDelete: Restrict)
+  transaction Transaction?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([savingsAccountId, contributionDate])
+  @@index([groupMemberId, contributionDate])
+  @@index([status])
+}
+
+model LoanApplication {
+  currency String @default("SLE") @db.Char(3)
+  id String @id @default(uuid()) @db.Uuid
+  groupId String @db.Uuid
+  groupMemberId String @db.Uuid
+  requestedAmount Decimal @db.Decimal(18, 2)
+  purpose String @db.Text
+  termMonths Int
+  proposedRate Decimal? @db.Decimal(7, 4)
+  status LoanApplicationStatus @default(DRAFT)
+  submittedAt DateTime?
+  supportingInformation String? @db.Text
+  reviewedAt DateTime?
+  reviewerId String? @db.Uuid
+  reviewerNotes String? @db.Text
+  rejectionReason String? @db.Text
+  group CommunityGroup @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  groupMember GroupMember @relation(fields: [groupMemberId], references: [id], onDelete: Restrict)
+  reviewer User? @relation("LoanApplicationReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  loan Loan?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([groupId, status])
+  @@index([groupMemberId, status])
+}
+
+model Loan {
+  currency String @default("SLE") @db.Char(3)
+  id String @id @default(uuid()) @db.Uuid
+  loanApplicationId String @unique @db.Uuid
+  groupId String @db.Uuid
+  groupMemberId String @db.Uuid
+  loanReference String @unique @db.VarChar(100)
+  principalAmount Decimal @db.Decimal(18, 2)
+  interestRate Decimal @db.Decimal(7, 4)
+  termMonths Int
+  totalPayable Decimal @db.Decimal(18, 2)
+  outstandingBalance Decimal @db.Decimal(18, 2)
+  disbursedAt DateTime?
+  startDate DateTime?
+  dueDate DateTime?
+  status LoanStatus @default(PENDING)
+  application LoanApplication @relation(fields: [loanApplicationId], references: [id], onDelete: Restrict)
+  group CommunityGroup @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  groupMember GroupMember @relation(fields: [groupMemberId], references: [id], onDelete: Restrict)
+  repayments LoanRepayment[]
+  paymentSubmissions PaymentSubmission[]
+  transactions Transaction[]
+  blockchainTransactions BlockchainTransaction[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([groupId, status])
+  @@index([groupMemberId, status])
+  @@index([dueDate])
+}
+
+model PaymentSubmission {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  groupId String @db.Uuid
+  loanId String? @db.Uuid
+  kind String @db.VarChar(20)
+  amount Decimal @db.Decimal(18, 2)
+  currency String @default("SLE") @db.VarChar(3)
+  weekStart DateTime? @db.Date
+  reference String @unique @db.VarChar(100)
+  status String @default("AWAITING_PAYMENT") @db.VarChar(30)
+  gateway String? @db.VarChar(20)
+  gatewayId String? @db.VarChar(100)
+  checkoutUrl String? @db.Text
+  gatewayPaidAt DateTime?
+  receipt String? @db.Text
+  submittedAt DateTime?
+  reviewedAt DateTime?
+  reviewerId String? @db.Uuid
+  reviewNotes String? @db.VarChar(1000)
+  transactionId String? @unique @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation("PaymentOwner", fields: [userId], references: [id], onDelete: Restrict)
+  reviewer User? @relation("PaymentReviewer", fields: [reviewerId], references: [id], onDelete: Restrict)
+  group CommunityGroup @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  loan Loan? @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  @@index([groupId, status, createdAt])
+  @@index([userId, createdAt])
+  @@unique([gateway, gatewayId])
+}
+
+model ProofDelivery {
+  id String @id @default(uuid()) @db.Uuid
+  reference String @unique @db.VarChar(100)
+  recordHash String @db.VarChar(66)
+  transactionType String @db.VarChar(40)
+  payload Json
+  status String @default("PENDING") @db.VarChar(20)
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  transactionHash String? @db.VarChar(66)
+  confirmedAt DateTime?
+  lastError String? @db.VarChar(300)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([status, nextAttemptAt])
+}
+
+model LoanRepayment {
+  currency String @default("SLE") @db.Char(3)
+  id String @id @default(uuid()) @db.Uuid
+  loanId String @db.Uuid
+  groupMemberId String @db.Uuid
+  amount Decimal @db.Decimal(18, 2)
+  principalPaid Decimal @default(0) @db.Decimal(18, 2)
+  interestPaid Decimal @default(0) @db.Decimal(18, 2)
+  paidAt DateTime @default(now())
+  reference String? @unique @db.VarChar(100)
+  status RepaymentStatus @default(PENDING)
+  loan Loan @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  groupMember GroupMember @relation(fields: [groupMemberId], references: [id], onDelete: Restrict)
+  transaction Transaction?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([loanId, paidAt])
+  @@index([groupMemberId, paidAt])
+  @@index([status])
+}
+
+model Transaction {
+  id String @id @default(uuid()) @db.Uuid
+  groupMemberId String? @db.Uuid
+  groupId String? @db.Uuid
+  contributionId String? @unique @db.Uuid
+  loanRepaymentId String? @unique @db.Uuid
+  loanId String? @db.Uuid
+  type TransactionType
+  amount Decimal @db.Decimal(18, 2)
+  currency String @default("GHS") @db.Char(3)
+  reference String @unique @db.VarChar(100)
+  status TransactionStatus @default(PENDING)
+  occurredAt DateTime @default(now())
+  description String? @db.Text
+  blockchainStatus BlockchainTransactionStatus?
+  blockchainHash String? @unique @db.VarChar(66)
+  metadata Json?
+  group CommunityGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  groupMember GroupMember? @relation(fields: [groupMemberId], references: [id], onDelete: SetNull)
+  contribution Contribution? @relation(fields: [contributionId], references: [id], onDelete: SetNull)
+  loanRepayment LoanRepayment? @relation(fields: [loanRepaymentId], references: [id], onDelete: SetNull)
+  loan Loan? @relation(fields: [loanId], references: [id], onDelete: SetNull)
+  blockchainTransaction BlockchainTransaction?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([groupMemberId, occurredAt])
+  @@index([groupId, occurredAt])
+  @@index([type, status])
+  @@index([loanId])
+  @@map("financial_transactions")
+}
+
+model BlockchainTransaction {
+  id String @id @default(uuid()) @db.Uuid
+  transactionId String? @unique @db.Uuid
+  loanId String? @db.Uuid
+  transactionHash String @unique @db.VarChar(66)
+  blockNumber BigInt?
+  network String @db.VarChar(50)
+  contractAddress String? @db.VarChar(42)
+  method String? @db.VarChar(100)
+  status BlockchainTransactionStatus @default(PENDING)
+  submittedAt DateTime @default(now())
+  confirmedAt DateTime?
+  errorMessage String? @db.Text
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  loan Loan? @relation(fields: [loanId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([loanId])
+  @@index([status, submittedAt])
+}
+
+model Meeting {
+  id String @id @default(uuid()) @db.Uuid
+  groupId String @db.Uuid
+  organizerId String @db.Uuid
+  title String @db.VarChar(200)
+  agenda String? @db.Text
+  description String? @db.Text
+  location String? @db.VarChar(255)
+  scheduledAt DateTime
+  status MeetingStatus @default(SCHEDULED)
+  minutes String? @db.Text
+  group CommunityGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  organizer User @relation("MeetingOrganizer", fields: [organizerId], references: [id], onDelete: Restrict)
+  attendance Attendance[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([groupId, scheduledAt])
+  @@index([status])
+}
+
+model Attendance {
+  id String @id @default(uuid()) @db.Uuid
+  meetingId String @db.Uuid
+  userId String @db.Uuid
+  status AttendanceStatus @default(ABSENT)
+  checkedInAt DateTime?
+  notes String? @db.VarChar(500)
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([meetingId, userId])
+  @@index([userId, status])
+}
+
+model Notification {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  type NotificationType
+  title String @db.VarChar(200)
+  message String @db.Text
+  channel String @default("IN_APP") @db.VarChar(30)
+  status NotificationStatus @default(PENDING)
+  // Optional idempotency key used by scheduled jobs (e.g. "repayment-due:<loanId>")
+  // so a reminder is only delivered once per entity rather than on every run.
+  dedupeKey String? @unique @db.VarChar(191)
+  sentAt DateTime?
+  readAt DateTime?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([userId, status, createdAt])
+}
+
+model AuditLog {
+  id String @id @default(uuid()) @db.Uuid
+  userId String? @db.Uuid
+  action String @db.VarChar(100)
+  entityType String @db.VarChar(100)
+  entityId String? @db.Uuid
+  oldValues Json?
+  newValues Json?
+  ipAddress String? @db.VarChar(45)
+  userAgent String? @db.VarChar(500)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([entityType, entityId])
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+}
+

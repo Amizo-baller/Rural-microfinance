@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "Rural Microfinance",
+    "slug": "rural-microfinance",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "ruralmicrofinance",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-router",
+      "expo-sharing"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

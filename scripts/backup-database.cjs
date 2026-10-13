@@ -1,0 +1,16 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const dotenv = require('dotenv');
+const root = path.resolve(__dirname, '..');
+const configuration = dotenv.parse(fs.readFileSync(path.join(root, 'apps/api/.env')));
+const url = new URL(configuration.DATABASE_URL);
+if (!['localhost','127.0.0.1','[::1]'].includes(url.hostname)) throw new Error('This backup command requires the local development database.');
+const installations = path.join(process.env.ProgramFiles || 'C:/Program Files', 'PostgreSQL');
+const executable = fs.readdirSync(installations).map(version => path.join(installations, version, 'bin/pg_dump.exe')).find(file => fs.existsSync(file));
+if (!executable) throw new Error('Install PostgreSQL pg_dump before applying the migration.');
+const directory = path.join(root, '.database-backups');
+fs.mkdirSync(directory, { recursive: true });
+const output = path.join(directory, `before-member-workflow-${Date.now()}.dump`);
+execFileSync(executable, ['-h',url.hostname,'-p',url.port || '5432','-U',decodeURIComponent(url.username),'-d',decodeURIComponent(url.pathname.slice(1)), '--format=custom','--file',output], { env: { ...process.env, PGPASSWORD: decodeURIComponent(url.password) }, windowsHide: true, timeout: 60000, stdio: 'pipe' });
+console.log(`Database backup saved: ${output}`);
