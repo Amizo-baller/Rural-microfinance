@@ -11,6 +11,6 @@ const executable = fs.readdirSync(installations).map(version => path.join(instal
 if (!executable) throw new Error('Install PostgreSQL pg_dump before applying the migration.');
 const directory = path.join(root, '.database-backups');
 fs.mkdirSync(directory, { recursive: true });
-const output = path.join(directory, `before-member-workflow-${Date.now()}.dump`);
+const output = path.join(directory, `render-staging-source-${Date.now()}.dump`);
 execFileSync(executable, ['-h',url.hostname,'-p',url.port || '5432','-U',decodeURIComponent(url.username),'-d',decodeURIComponent(url.pathname.slice(1)), '--format=custom','--file',output], { env: { ...process.env, PGPASSWORD: decodeURIComponent(url.password) }, windowsHide: true, timeout: 60000, stdio: 'pipe' });
 console.log(`Database backup saved: ${output}`);
