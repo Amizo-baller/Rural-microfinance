@@ -6,7 +6,7 @@ import { PrismaService } from '../prisma.service';
 import { CreateUserDto, ListUsersDto, UpdateUserDto } from './dto';
 
 const safeUser = {
-  id: true, firstName: true, lastName: true, email: true, phone: true, profileImageUrl: true,
+  id: true, firstName: true, lastName: true, email: true, phone: true, profileImageUrl: true, blockchainAddress: true,
   status: true, lastLoginAt: true, createdAt: true, updatedAt: true, role: { select: { name: true } },
 } satisfies Prisma.UserSelect;
 
@@ -22,7 +22,7 @@ export class UsersService {
     return user;
   }
 
-  async create(dto: CreateUserDto) {
+  async create(dto: CreateUserDto, actor?: { sub: string; role: string }) {
     const email = this.normalizeEmail(dto.email);
     const phone = this.normalizePhone(dto.phone);
     if (!email && !phone) throw new ConflictException('Email or phone is required');
@@ -33,7 +33,12 @@ export class UsersService {
     if (!role) throw new NotFoundException('Role not found');
     if (existing) throw new ConflictException('An account with this email or phone already exists');
     try {
-      return await this.prisma.user.create({ data: { firstName: dto.firstName.trim(), lastName: dto.lastName.trim(), email, phone, passwordHash: await bcrypt.hash(dto.password, 12), roleId: role.id, status: UserStatus.ACTIVE }, select: safeUser });
+      const passwordHash = await bcrypt.hash(dto.password, 12);
+      return await this.prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({ data: { firstName: dto.firstName.trim(), lastName: dto.lastName.trim(), email, phone, passwordHash, roleId: role.id, status: UserStatus.ACTIVE }, select: safeUser });
+        await tx.auditLog.create({ data: { userId: actor?.sub, action: 'USER_CREATED', entityType: 'User', entityId: user.id, newValues: { role: dto.role, status: user.status } } });
+        return user;
+      });
     } catch (error) {
       if (typeof error === 'object' && error && 'code' in error && error.code === 'P2002') throw new ConflictException('An account with this email or phone already exists');
       throw error;
@@ -71,7 +76,11 @@ export class UsersService {
       const duplicate = await this.prisma.user.findFirst({ where: { id: { not: id }, OR: [...(email ? [{ email }] : []), ...(phone ? [{ phone }] : [])] } });
       if (duplicate) throw new ConflictException('An account with this email or phone already exists');
     }
-    return this.prisma.user.update({ where: { id }, data: { ...(dto.firstName !== undefined ? { firstName: dto.firstName.trim() } : {}), ...(dto.lastName !== undefined ? { lastName: dto.lastName.trim() } : {}), ...(email !== undefined ? { email } : {}), ...(phone !== undefined ? { phone } : {}), ...(dto.profileImageUrl !== undefined ? { profileImageUrl: dto.profileImageUrl } : {}) }, select: safeUser });
+    return this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.update({ where: { id }, data: { ...(dto.firstName !== undefined ? { firstName: dto.firstName.trim() } : {}), ...(dto.lastName !== undefined ? { lastName: dto.lastName.trim() } : {}), ...(email !== undefined ? { email } : {}), ...(phone !== undefined ? { phone } : {}), ...(dto.profileImageUrl !== undefined ? { profileImageUrl: dto.profileImageUrl } : {}) }, select: safeUser });
+      await tx.auditLog.create({ data: { userId: actor.sub, action: 'USER_PROFILE_UPDATED', entityType: 'User', entityId: id, newValues: { fields: Object.keys(dto) } } });
+      return user;
+    });
   }
 
   async updateStatus(id: string, status: UserStatus, actor: { sub: string; role: string }) {
@@ -82,6 +91,7 @@ export class UsersService {
     return this.prisma.$transaction([
       this.prisma.user.update({ where: { id }, data: { status }, select: safeUser }),
       ...(status === UserStatus.ACTIVE ? [] : [this.prisma.authToken.updateMany({ where: { userId: id, type: 'REFRESH', revokedAt: null }, data: { revokedAt: new Date() } })]),
+      this.prisma.auditLog.create({ data: { userId: actor.sub, action: 'USER_STATUS_CHANGED', entityType: 'User', entityId: id, oldValues: { status: target.status }, newValues: { status } } }),
     ]).then(([user]) => user);
   }
 

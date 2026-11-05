@@ -133,6 +133,8 @@ enum NotificationType {
 enum AuthTokenType {
   REFRESH
   PASSWORD_RESET
+  WALLET_LOGIN
+  WALLET_LINK
 }
 model Role {
   id String @id @default(uuid()) @db.Uuid
@@ -176,6 +178,8 @@ model User {
   authTokens AuthToken[]
   paymentSubmissions PaymentSubmission[] @relation("PaymentOwner")
   reviewedPayments PaymentSubmission[] @relation("PaymentReviewer")
+  withdrawalRequests WithdrawalRequest[] @relation("WithdrawalRequester")
+  reviewedWithdrawals WithdrawalRequest[] @relation("WithdrawalReviewer")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   @@index([roleId])
@@ -187,6 +191,7 @@ model AuthToken {
   id String @id @default(uuid()) @db.Uuid
   userId String @db.Uuid
   tokenHash String @unique @db.VarChar(255)
+  walletAddress String? @db.VarChar(42)
   type AuthTokenType
   expiresAt DateTime
   revokedAt DateTime?
@@ -198,6 +203,8 @@ model AuthToken {
 }
 
 model CommunityGroup {
+  weeklyContributionAmount Decimal? @db.Decimal(18, 2)
+  withdrawalsAllowed Boolean @default(true)
   id String @id @default(uuid()) @db.Uuid
   name String @unique @db.VarChar(150)
   registrationNo String? @unique @db.VarChar(100)
@@ -213,6 +220,7 @@ model CommunityGroup {
   meetings Meeting[]
   transactions Transaction[]
   paymentSubmissions PaymentSubmission[]
+  savingsCycles SavingsCycle[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   @@index([managerId])
@@ -252,16 +260,63 @@ model SavingsAccount {
   groupMemberId String @db.Uuid
   accountNumber String @unique @db.VarChar(50)
   balance Decimal @default(0) @db.Decimal(18, 2)
+  withdrawalFeeDue Decimal @default(0) @db.Decimal(18, 2)
   status SavingsAccountStatus @default(ACTIVE)
   openedAt DateTime @default(now())
   closedAt DateTime?
   groupMember GroupMember @relation(fields: [groupMemberId], references: [id], onDelete: Restrict)
   contributions Contribution[]
+  withdrawals WithdrawalRequest[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   @@index([groupMemberId])
   @@unique([groupMemberId, currency])
   @@index([status])
+}
+
+model WithdrawalRequest {
+  id String @id @default(uuid()) @db.Uuid
+  savingsAccountId String @db.Uuid
+  requesterId String @db.Uuid
+  reviewerId String? @db.Uuid
+  amount Decimal @db.Decimal(18, 2)
+  payoutDestination Json?
+  payoutFeePaid Boolean @default(false)
+  payoutIdempotencyKey String? @unique @db.VarChar(64)
+  payoutId String? @db.VarChar(100)
+  payoutReference String? @db.VarChar(150)
+  payoutReceipt Json?
+  payoutFees Decimal? @db.Decimal(18, 2)
+  payoutAttempts Int @default(0)
+  payoutNextAttemptAt DateTime?
+  payoutLastError String? @db.VarChar(500)
+  reference String @unique @db.VarChar(100)
+  status String @default("PENDING") @db.VarChar(20)
+  reason String @db.VarChar(1000)
+  reviewNotes String? @db.VarChar(1000)
+  reviewedAt DateTime?
+  savingsAccount SavingsAccount @relation(fields: [savingsAccountId], references: [id], onDelete: Restrict)
+  requester User @relation("WithdrawalRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  reviewer User? @relation("WithdrawalReviewer", fields: [reviewerId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([status, createdAt])
+  @@index([savingsAccountId])
+  @@index([status, payoutNextAttemptAt])
+}
+
+model SavingsCycle {
+  id String @id @default(uuid()) @db.Uuid
+  groupId String @db.Uuid
+  name String @db.VarChar(150)
+  startDate DateTime @db.Date
+  endDate DateTime @db.Date
+  targetAmount Decimal @db.Decimal(18, 2)
+  status String @default("PLANNED") @db.VarChar(20)
+  group CommunityGroup @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([groupId, status])
 }
 
 model Contribution {
@@ -421,7 +476,7 @@ model Transaction {
   loanId String? @db.Uuid
   type TransactionType
   amount Decimal @db.Decimal(18, 2)
-  currency String @default("GHS") @db.Char(3)
+  currency String @default("SLE") @db.Char(3)
   reference String @unique @db.VarChar(100)
   status TransactionStatus @default(PENDING)
   occurredAt DateTime @default(now())
@@ -536,4 +591,3 @@ model AuditLog {
   @@index([userId, createdAt])
   @@index([action, createdAt])
 }
-

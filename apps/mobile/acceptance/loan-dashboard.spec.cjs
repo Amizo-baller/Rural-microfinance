@@ -63,7 +63,7 @@ test('loan reference layout uses real balances and preserves repayment and appli
     return route.continue({ url: fixture.apiOrigin + url.pathname + url.search });
   });
   await page.goto('/?signIn=1', { waitUntil: 'domcontentloaded', timeout: 90000 });
-  await page.getByLabel('Email address or phone number', { exact: true }).fill(identifier);
+  await page.getByLabel(/^(Member ID, email address or phone number|Email address or phone number)$/).fill(identifier);
   await page.getByLabel('Password', { exact: true }).fill(fixture.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'My Dashboard' })).toBeVisible({ timeout: 60000 });
@@ -102,7 +102,7 @@ test('loan reference layout uses real balances and preserves repayment and appli
     true,
   );
   await page.getByRole('button', { name: 'Repay loan', exact: true }).click();
-  await page.getByLabel('Repayment amount (GHS) · max 1200', { exact: true }).fill('100');
+  await page.getByLabel('Repayment amount (SLE) · max 1200', { exact: true }).fill('100');
   const recorded = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === `/api/loans/${loan.id}/repayments` &&

@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma.service';
 import { CreateApprovedLoanDto, CreateLoanApplicationDto, DisburseLoanDto, ListLoanApplicationsDto, RecordLoanRepaymentDto, UpdateLoanApplicationDto } from './dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { keccak256, toUtf8Bytes } from 'ethers';
+import { hasPermission } from '../auth/authorization';
 
 type Actor = { sub: string; role: string };
 
@@ -64,7 +65,7 @@ export class LoansService {
         await tx.auditLog.create({ data: { userId: actor.sub, action: 'LOAN_APPLICATION_SUBMITTED', entityType: 'LoanApplication', entityId: createdApplication.id, newValues: { status: createdApplication.status, requestedAmount: dto.amount, groupId: member.groupId } } });
         return createdApplication;
       });
-      await this.notifications.create(member.userId, 'Loan submitted', `Your loan application for GHS ${dto.amount} was submitted.`, 'LOAN');
+      await this.notifications.create(member.userId, 'Loan submitted', `Your loan application for SLE ${dto.amount} was submitted.`, 'LOAN');
       return application;
     } catch (error) {
       if (typeof error === 'object' && error && 'code' in error && error.code === 'P2002') throw new ConflictException('You already have an active loan application');
@@ -100,6 +101,7 @@ export class LoansService {
   }
 
   async updateStatus(id: string, dto: UpdateLoanApplicationDto, actor: Actor) {
+    if (!hasPermission(actor.role, 'loans:manage')) throw new ForbiddenException('Your role cannot approve or change loan applications');
     const application = await this.prisma.loanApplication.findUnique({ where: { id }, select: { id: true, status: true, groupId: true, groupMember: { select: { userId: true } } } });
     if (!application) throw new NotFoundException('Loan application not found');
     await this.assertManagedGroup(application.groupId, actor);
@@ -139,6 +141,7 @@ export class LoansService {
   }
 
   async createApprovedLoan(applicationId: string, dto: CreateApprovedLoanDto, actor: Actor) {
+    if (!hasPermission(actor.role, 'loans:execute')) throw new ForbiddenException('Your role cannot process approved loans');
     const application = await this.prisma.loanApplication.findUnique({ where: { id: applicationId }, select: { id: true, groupId: true, groupMemberId: true, requestedAmount: true, currency: true, termMonths: true, status: true } });
     if (!application) throw new NotFoundException('Loan application not found');
     await this.assertManagedGroup(application.groupId, actor);
@@ -151,24 +154,31 @@ export class LoansService {
     const existing = await this.prisma.loan.findUnique({ where: { loanApplicationId: application.id }, select: { id: true } });
     if (existing) throw new ConflictException('A loan already exists for this application');
     const loanReference = `LOAN-${application.id}`;
-    return this.prisma.loan.create({ data: {
+    try { return await this.prisma.$transaction(async (tx) => {
+    const loan = await tx.loan.create({ data: {
       loanApplicationId: application.id, groupId: application.groupId, groupMemberId: application.groupMemberId, loanReference,
       principalAmount: application.requestedAmount, currency: application.currency, interestRate, termMonths: application.termMonths,
       totalPayable: application.requestedAmount, outstandingBalance: application.requestedAmount, startDate, dueDate, status: LoanStatus.APPROVED,
     }, select: { id: true, loanReference: true, principalAmount: true, interestRate: true, termMonths: true, totalPayable: true, outstandingBalance: true, startDate: true, dueDate: true, status: true } });
+    await tx.auditLog.create({ data: { userId: actor.sub, action: 'APPROVED_LOAN_CREATED', entityType: 'Loan', entityId: loan.id, newValues: { applicationId, interestRate: dto.interestRate, startDate: dto.startDate, dueDate: dto.dueDate } } });
+    return loan;
+    }); } catch (error) { if ((error as { code?: string }).code === 'P2002') throw new ConflictException('A loan already exists for this application'); throw error; }
   }
 
   async disburse(id: string, dto: DisburseLoanDto, actor: Actor) {
+    if (!hasPermission(actor.role, 'loans:execute')) throw new ForbiddenException('Your role cannot disburse loans');
     const managedLoan = await this.prisma.loan.findUnique({ where: { id }, select: { groupId: true } });
     if (!managedLoan) throw new NotFoundException('Loan not found');
     await this.assertManagedGroup(managedLoan.groupId, actor);
-    const result = await this.prisma.$transaction(async (tx) => {
-      const loan = await tx.loan.findUnique({ where: { id }, select: { id: true, loanReference: true, groupId: true, groupMemberId: true, principalAmount: true, status: true, startDate: true, dueDate: true, groupMember: { select: { userId: true } } } });
+    let result;
+    try { result = await this.prisma.$transaction(async (tx) => {
+      const loan = await tx.loan.findUnique({ where: { id }, select: { id: true, currency: true, loanReference: true, groupId: true, groupMemberId: true, principalAmount: true, status: true, startDate: true, dueDate: true, groupMember: { select: { userId: true } } } });
       if (!loan) throw new NotFoundException('Loan not found');
       if (loan.status !== LoanStatus.APPROVED) throw new ConflictException('Only approved loans can be disbursed');
       const transaction = await tx.transaction.create({ data: {
         groupId: loan.groupId, groupMemberId: loan.groupMemberId, loanId: loan.id, type: TransactionType.LOAN_DISBURSEMENT,
         amount: loan.principalAmount, reference: `DISB-${loan.loanReference}`, status: TransactionStatus.COMPLETED,
+        currency: loan.currency,
         description: `Loan disbursement ${loan.loanReference}`,
         occurredAt: loan.startDate ?? new Date(), metadata: { groupId: loan.groupId, loanReference: loan.loanReference },
       } });
@@ -182,10 +192,11 @@ export class LoansService {
         if (dto.blockchainTransactionHash) await tx.transaction.update({ where: { id: transaction.id }, data: { blockchainStatus: 'SUBMITTED', blockchainHash: dto.blockchainTransactionHash } });
       }
       const updatedLoan = await tx.loan.update({ where: { id: loan.id }, data: { status: LoanStatus.ACTIVE, disbursedAt: new Date() }, select: { id: true, loanReference: true, principalAmount: true, interestRate: true, termMonths: true, outstandingBalance: true, startDate: true, dueDate: true, disbursedAt: true, status: true } });
+      await tx.auditLog.create({ data: { userId: actor.sub, action: 'APPROVED_LOAN_DISBURSED', entityType: 'Loan', entityId: id, newValues: { transactionId: transaction.id, amount: loan.principalAmount.toFixed(2), currency: loan.currency } } });
+      await tx.notification.create({ data: { userId: loan.groupMember.userId, title: 'Loan disbursed', message: `Loan ${updatedLoan.loanReference} has been disbursed.`, type: 'LOAN', status: 'SENT', sentAt: new Date() } });
       return { loan: updatedLoan, transaction, blockchainTransaction, userId: loan.groupMember.userId };
-    });
-    await this.notifications.create(result.userId, 'Loan disbursed', `Loan ${result.loan.loanReference} has been disbursed.`, 'LOAN');
-    return result;
+    }); } catch (error) { if (['P2002', 'P2034', 'P2028'].includes((error as { code?: string }).code ?? '')) throw new ConflictException('The loan operation changed. Refresh before retrying.'); throw error; }
+    return { ...result, blockchainTransaction: result.blockchainTransaction ? { ...result.blockchainTransaction, blockNumber: result.blockchainTransaction.blockNumber?.toString() ?? null } : null };
   }
 
   async loans(query: ListLoanApplicationsDto, actor: Actor) {
@@ -216,7 +227,7 @@ export class LoansService {
       const result = await this.prisma.$transaction(async (tx) => {
         const loan = await tx.loan.findUnique({ where: { id: loanId }, select: { id: true, loanReference: true, groupId: true, groupMemberId: true, outstandingBalance: true, status: true, groupMember: { select: { userId: true } } } });
         if (!loan) throw new NotFoundException('Loan not found');
-        if (!this.hasManagementAccess(actor) && loan.groupMember.userId !== actor.sub) throw new ForbiddenException('You cannot repay this loan');
+        if (!this.hasManagementAccess(actor) && loan.groupMember.userId !== actor.sub) await this.assertManagedGroup(loan.groupId, actor);
         if (loan.status !== LoanStatus.ACTIVE) throw new ConflictException('Only active loans can receive repayments');
         if (amount.greaterThan(loan.outstandingBalance)) throw new ConflictException('Repayment cannot exceed the outstanding balance');
         const remainingBalance = loan.outstandingBalance.minus(amount);
@@ -226,7 +237,7 @@ export class LoansService {
         const transaction = await tx.transaction.create({ data: { groupId: loan.groupId, groupMemberId: loan.groupMemberId, loanId: loan.id, loanRepaymentId: repayment.id, type: TransactionType.LOAN_REPAYMENT, amount, reference: `REPAY-${reference}`, status: TransactionStatus.COMPLETED, occurredAt: repaymentDate, description: `Loan repayment ${loan.loanReference}`, metadata: { loanReference: loan.loanReference, remainingBalance: remainingBalance.toString() } } });
         return { repayment, transaction, loan: { id: loan.id, loanReference: loan.loanReference, remainingBalance, status: remainingBalance.isZero() ? LoanStatus.COMPLETED : LoanStatus.ACTIVE }, userId: loan.groupMember.userId };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-      await this.notifications.create(result.userId, 'Repayment recorded', `Repayment of GHS ${dto.amount} was recorded for ${result.loan.loanReference}.`, NotificationType.REPAYMENT);
+      await this.notifications.create(result.userId, 'Repayment recorded', `Repayment of SLE ${dto.amount} was recorded for ${result.loan.loanReference}.`, NotificationType.REPAYMENT);
       return result;
     } catch (error) {
       if (typeof error === 'object' && error && 'code' in error && error.code === 'P2002') throw new ConflictException('A repayment with this reference already exists');

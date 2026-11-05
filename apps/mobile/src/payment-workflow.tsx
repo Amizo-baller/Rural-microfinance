@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Linking, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, AppState, Image, Linking, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import * as Sharing from 'expo-sharing';
 import { captureRef } from 'react-native-view-shot';
 import { request } from './api-client';
 import { Alert } from './feedback';
 import { formatSle } from './dashboard';
+import { DateField } from './date-field';
 
-export type WorkflowSummary = { memberId: string; totalSavings: string | number; groupSavings: string | number; unread: number; pending: number; canReview: boolean; gatewayConfigured: boolean; loans: { id: string; loanReference: string; outstandingBalance: string }[] };
+export type WorkflowSummary = { memberId: string; totalSavings: string | number; groupSavings: string | number; unread: number; pending: number; canReview: boolean; gatewayConfigured: boolean; gatewayMode?: 'test' | 'live' | null; automaticPayments?: boolean; loans: { id: string; loanReference: string; outstandingBalance: string }[] };
 type Payment = { id: string; kind: string; reference: string; amount: string; status: string; currency: string; weekStart: string | null; gatewayPaidAt: string | null; submittedAt: string | null; reviewedAt: string | null; reviewNotes: string | null; checkoutUrl: string | null; user: { memberId: string; firstName: string; lastName: string }; reviewer: { firstName: string; lastName: string } | null; group: { name: string } };
 type Application = { id: string; requestedAmount: string; status: string; purpose: string; termMonths: number; submittedAt: string | null; groupMember: { user: { firstName: string; lastName: string }; memberNumber: string }; reviewerNotes: string | null };
-type Props = { token: string; mode: 'CONTRIBUTION' | 'REPAYMENT' | 'REVIEW'; onBack: () => void; onChanged: () => void; onApplyLoan: () => void; initialEmail?: string | null };
+type Props = { token: string; canManageLoans?: boolean; mode: 'CONTRIBUTION' | 'REPAYMENT' | 'REVIEW'; onBack: () => void; onChanged: () => void; onApplyLoan: () => void; initialEmail?: string | null };
 function monday() { const date = new Date(); date.setUTCDate(date.getUTCDate() - ((date.getUTCDay()+6)%7)); return date.toISOString().slice(0,10); }
 function timestamp(value: string | null) { return value ? new Date(value).toLocaleString() : 'Pending'; }
 
@@ -35,8 +35,8 @@ export function PaymentWorkflow(props: Props) {
   const attempt = useRef<{ details: string; id: string } | null>(null);
   const mounted = useRef(true);
   const op = useRef(false);
-  async function load(nextPage = 1) {
-    setLoading(true);
+  async function load(nextPage = 1, silent = false) {
+    if (!silent) setLoading(true);
     try {
       const [state, payments] = await Promise.all([
         request<WorkflowSummary>('/workflow/summary', { token: props.token }),
@@ -44,16 +44,29 @@ export function PaymentWorkflow(props: Props) {
       ]);
       if (!mounted.current) return;
       setSummary(state); setMemberId((current) => current || state.memberId);
-      setRows((current) => nextPage === 1 ? payments.items : [...current, ...payments.items.filter((row) => !current.some((item) => item.id === row.id))]);
-      setPage(nextPage); setTotal(payments.total); setError(null);
-      if (props.mode === 'REVIEW') {
+      setRows((current) => silent ? [...payments.items, ...current.filter((row) => !payments.items.some((item) => item.id === row.id))] : nextPage === 1 ? payments.items : [...current, ...payments.items.filter((row) => !current.some((item) => item.id === row.id))]);
+      if (!silent) setPage(nextPage);
+      setTotal(payments.total); setError(null);
+      setSelected((current) => current ? payments.items.find((row) => row.id === current.id) ?? current : null);
+      if (props.mode === 'REVIEW' && props.canManageLoans !== false) {
         const result = await request<{ items: Application[] }>('/loans/applications?status=PENDING&limit=100', { token: props.token });
         if (mounted.current) setApplications(result.items);
       }
-    } catch (failure) { if (mounted.current) setError(failure instanceof Error ? failure.message : 'Could not load payments.'); }
+    } catch (failure) { if (mounted.current && !silent) setError(failure instanceof Error ? failure.message : 'Could not load payments.'); }
     finally { if (mounted.current) setLoading(false); }
   }
   useEffect(() => { mounted.current = true; void load(); return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    let pending = false;
+    const refresh = async () => {
+      if (pending || op.current) return;
+      pending = true;
+      try { await load(1, true); } finally { pending = false; }
+    };
+    const timer = setInterval(() => { if (AppState.currentState === 'active') void refresh(); }, 15000);
+    const listener = AppState.addEventListener('change', (state) => { if (state === 'active') void refresh(); });
+    return () => { clearInterval(timer); listener.remove(); };
+  }, []);
   async function action(operation: () => Promise<void>) {
     if (op.current) return;
     op.current = true; setBusy(true);
@@ -127,12 +140,13 @@ export function PaymentWorkflow(props: Props) {
     {error && <View accessibilityRole="alert"><Text style={s.body}>{error}</Text>{button('Retry', () => void load())}</View>}
     {summary && <View style={s.card}><Text style={s.label}>Member ID: {summary.memberId}</Text><Text style={s.body}>Savings: {formatSle(summary.totalSavings)}</Text><Text style={s.body}>Community total: {formatSle(summary.groupSavings)}</Text></View>}
     {props.mode !== 'REVIEW' && <>
-      <Text style={s.body}>Pay online, verify the payment, then submit your screenshot. Balances change after staff confirmation.</Text>
+      <Text style={s.body}>{summary?.automaticPayments ? 'Complete your Monime payment. Confirmed contributions update your savings and the admin total automatically. You can also use Verify gateway payment to check now.' : 'Pay online, verify the payment, then submit your screenshot. Balances change after staff confirmation.'}</Text>
       {!summary?.gatewayConfigured && <Text accessibilityRole="alert" style={s.body}>Online checkout is awaiting the treasurer's payment-gateway configuration.</Text>}
+      {summary?.gatewayMode === 'test' && <Text accessibilityRole="alert" style={s.body}>Test payments only. No real money will be charged.</Text>}
       {field('Member ID', memberId, setMemberId)}
       {field('Amount to pay (SLE)', amount, setAmount, true)}
       {field('Email for gateway receipt', email, setEmail)}
-      {props.mode === 'CONTRIBUTION' && field('Contribution week (YYYY-MM-DD)', week, setWeek)}
+      {props.mode === 'CONTRIBUTION' && <DateField label="Contribution week" value={week} onChangeText={setWeek} clearable={false} disabled={busy} maxDate={new Date().toISOString().slice(0, 10)} />}
       {props.mode === 'REPAYMENT' && summary?.loans.map((loan) => button(`${loan.loanReference} · ${formatSle(loan.outstandingBalance)}${loanId === loan.id ? ' · Selected' : ''}`, () => setLoanId(loan.id)))}
       {button('Pay online', () => void start(), !summary?.gatewayConfigured)}
       {button('Apply for a loan', props.onApplyLoan)}
@@ -153,7 +167,7 @@ export function PaymentWorkflow(props: Props) {
     <Text accessibilityRole="header" aria-level={2} style={s.heading}>Payment history</Text>
     {rows.map((row) => <Pressable key={row.id} accessibilityRole="button" onPress={() => void openRow(row)} style={s.card}><Text style={s.heading}>{formatSle(row.amount)} · {row.status}</Text><Text style={s.body}>Member {row.user.memberId} · {row.kind}</Text><Text style={s.body}>{row.reference}</Text><Text style={s.body}>{timestamp(row.reviewedAt ?? row.submittedAt ?? row.gatewayPaidAt)}</Text></Pressable>)}
     {rows.length < total && button('Load more payments', () => void load(page + 1))}
-    {props.mode === 'REVIEW' && <><Text accessibilityRole="header" aria-level={2} style={s.heading}>Loan applications awaiting confirmation</Text>{field('Loan review notes / rejection reason', notes, setNotes)}{applications.map((application) => <View key={application.id} style={s.card}><Text style={s.heading}>{application.groupMember.user.firstName} {application.groupMember.user.lastName}</Text><Text style={s.body}>Member {application.groupMember.memberNumber} · {formatSle(application.requestedAmount)} · {application.termMonths} months</Text><Text style={s.body}>{application.purpose}</Text><Text style={s.body}>Submitted: {timestamp(application.submittedAt)}</Text>{button('Approve loan application', () => void loanDecision(application, 'APPROVED'))}{button('Reject loan application', () => void loanDecision(application, 'REJECTED'), !notes.trim())}</View>)}</>}
+    {props.mode === 'REVIEW' && props.canManageLoans !== false && <><Text accessibilityRole="header" aria-level={2} style={s.heading}>Loan applications awaiting confirmation</Text>{field('Loan review notes / rejection reason', notes, setNotes)}{applications.map((application) => <View key={application.id} style={s.card}><Text style={s.heading}>{application.groupMember.user.firstName} {application.groupMember.user.lastName}</Text><Text style={s.body}>Member {application.groupMember.memberNumber} · {formatSle(application.requestedAmount)} · {application.termMonths} months</Text><Text style={s.body}>{application.purpose}</Text><Text style={s.body}>Submitted: {timestamp(application.submittedAt)}</Text>{button('Approve loan application', () => void loanDecision(application, 'APPROVED'))}{button('Reject loan application', () => void loanDecision(application, 'REJECTED'), !notes.trim())}</View>)}</>}
   </ScrollView>;
 }
 const s = StyleSheet.create({

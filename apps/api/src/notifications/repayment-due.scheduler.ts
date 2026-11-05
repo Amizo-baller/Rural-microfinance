@@ -74,8 +74,8 @@ export class RepaymentDueScheduler {
       const dueLabel = dueDate ? dueDate.toLocaleDateString() : 'the due date';
       const overdue = Boolean(dueDate && dueDate < now);
       const message = overdue
-        ? `Loan ${loan.loanReference} was due on ${dueLabel} and still has an outstanding balance of GHS ${loan.outstandingBalance}. Please make a repayment as soon as possible.`
-        : `Loan ${loan.loanReference} is due on ${dueLabel} with an outstanding balance of GHS ${loan.outstandingBalance}. Please prepare your repayment.`;
+        ? `Loan ${loan.loanReference} was due on ${dueLabel} and still has an outstanding balance of SLE ${loan.outstandingBalance}. Please make a repayment as soon as possible.`
+        : `Loan ${loan.loanReference} is due on ${dueLabel} with an outstanding balance of SLE ${loan.outstandingBalance}. Please prepare your repayment.`;
 
       try {
         await this.notifications.create(loan.groupMember.userId, 'Repayment due', message, 'REPAYMENT', dedupeKey);

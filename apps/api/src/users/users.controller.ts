@@ -16,7 +16,7 @@ export class UsersController {
   @Post()
   @UseGuards(PermissionsGuard)
   @Permissions('users:manage')
-  create(@Body() dto: CreateUserDto) { return this.users.create(dto); }
+  create(@Body() dto: CreateUserDto, @Req() request: AuthenticatedRequest) { return this.users.create(dto, request.user); }
 
   @Get()
   @UseGuards(PermissionsGuard)

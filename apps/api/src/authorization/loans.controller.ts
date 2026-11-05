@@ -30,11 +30,11 @@ export class LoansController {
   getApplicationAudit(@Param('id', ParseUUIDPipe) id: string, @Req() request: AuthenticatedRequest) { return this.loans.audit(id, request.user); }
 
   @Post('applications/:id/loan')
-  @Permissions('loans:manage')
+  @Permissions('loans:execute')
   createApprovedLoan(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateApprovedLoanDto, @Req() request: AuthenticatedRequest) { return this.loans.createApprovedLoan(id, dto, request.user); }
 
   @Post(':id/disburse')
-  @Permissions('loans:manage')
+  @Permissions('loans:execute')
   disburseLoan(@Param('id', ParseUUIDPipe) id: string, @Body() dto: DisburseLoanDto, @Req() request: AuthenticatedRequest) { return this.loans.disburse(id, dto, request.user); }
 
   @Get()

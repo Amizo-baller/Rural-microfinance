@@ -1,8 +1,10 @@
 import { CommunityGroupStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { IsBoolean, IsEnum, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
 
 export class CreateGroupDto {
+  @ValidateIf((_object, value) => value !== undefined) @Matches(/^\d{1,12}(\.\d{1,2})?$/) weeklyContributionAmount?: string;
+  @ValidateIf((_object, value) => value !== undefined) @IsBoolean() withdrawalsAllowed?: boolean;
   @IsString() @MinLength(2) @MaxLength(150) name!: string;
   @IsString() @MinLength(2) @MaxLength(100) registrationNo!: string;
   @IsString() @MinLength(2) @MaxLength(255) location!: string;
@@ -12,6 +14,8 @@ export class CreateGroupDto {
 }
 
 export class UpdateGroupDto {
+  @ValidateIf((_object, value) => value !== undefined) @Matches(/^\d{1,12}(\.\d{1,2})?$/) weeklyContributionAmount?: string;
+  @ValidateIf((_object, value) => value !== undefined) @IsBoolean() withdrawalsAllowed?: boolean;
   @IsOptional() @IsString() @MinLength(2) @MaxLength(150) name?: string;
   @IsOptional() @IsString() @MinLength(2) @MaxLength(100) registrationNo?: string;
   @IsOptional() @IsString() @MinLength(2) @MaxLength(255) location?: string;

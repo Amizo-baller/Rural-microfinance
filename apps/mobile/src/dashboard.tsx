@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { roleLabel } from './account-roles';
 import {
   ActivityIndicator,
   Pressable,
@@ -162,10 +163,7 @@ type Props = {
 export function Dashboard(props: Props) {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning,' : hour < 18 ? 'Good afternoon,' : 'Good evening,';
-  const role = props.role
-    .replaceAll('_', ' ')
-    .toLowerCase()
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+  const role = roleLabel(props.role);
   const quick = [
     { label: 'Save', icon: 'plus' as const, press: props.onSavings, dark: true },
     { label: 'Pay loan', icon: 'arrow' as const, press: props.onLoans },
@@ -205,13 +203,17 @@ export function Dashboard(props: Props) {
               style={s.bell}
             >
               <DashboardIcon name="bell" color="#0B1026" size={28} />
-              {Boolean(props.unreadNotifications) && <Text style={s.badge}>{props.unreadNotifications! > 99 ? '99+' : props.unreadNotifications}</Text>}
+              {Boolean(props.unreadNotifications) && (
+                <Text style={s.badge}>
+                  {props.unreadNotifications! > 99 ? '99+' : props.unreadNotifications}
+                </Text>
+              )}
             </Pressable>
           )}
         </View>
         <View style={s.headingRow}>
           <Text accessibilityRole="header" aria-level={1} style={s.heading}>
-            My Dashboard
+            {props.role === 'SUPER_ADMIN' ? 'Admin' : role} dashboard
           </Text>
           {props.onBlockchain && (
             <Pressable
@@ -298,7 +300,18 @@ export function Dashboard(props: Props) {
             { label: 'Apply for a loan', press: props.onApplyLoan },
             { label: 'Repay loan', press: props.onRepayLoan },
             { label: 'Confirm member requests', press: props.onReviewRequests },
-          ].filter((action) => action.press).map((action) => <Pressable key={action.label} accessibilityRole="button" style={s.service} onPress={action.press}><Text style={s.link}>{action.label}</Text></Pressable>)}
+          ]
+            .filter((action) => action.press)
+            .map((action) => (
+              <Pressable
+                key={action.label}
+                accessibilityRole="button"
+                style={s.service}
+                onPress={action.press}
+              >
+                <Text style={s.link}>{action.label}</Text>
+              </Pressable>
+            ))}
         </View>
         {props.community ? (
           <Pressable
@@ -444,7 +457,19 @@ export function Dashboard(props: Props) {
 }
 
 const s = StyleSheet.create({
-  badge: { position: 'absolute', top: 0, right: 0, backgroundColor: '#006347', color: '#FFFFFF', borderRadius: 12, paddingHorizontal: 5, minWidth: 20, textAlign: 'center', fontSize: 12, fontWeight: '700' },
+  badge: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    backgroundColor: '#006347',
+    color: '#FFFFFF',
+    borderRadius: 12,
+    paddingHorizontal: 5,
+    minWidth: 20,
+    textAlign: 'center',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   root: { flex: 1, backgroundColor: '#FFFFFF' },
   content: {
     flexGrow: 1,

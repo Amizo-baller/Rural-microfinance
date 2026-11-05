@@ -23,7 +23,7 @@ const contributionSelect = {
 export class SavingsService {
   constructor(private readonly prisma: PrismaService, private readonly notifications: NotificationsService) {}
 
-  private hasFullAccess(actor: Actor) { return ['ADMIN', 'SUPER_ADMIN', 'TREASURER'].includes(actor.role); }
+  private hasFullAccess(actor: Actor) { return ['ADMIN', 'SUPER_ADMIN', 'TREASURER', 'AUDITOR'].includes(actor.role); }
 
   private async memberOrThrow(id: string) {
     const member = await this.prisma.groupMember.findUnique({ where: { id }, select: { id: true, userId: true, groupId: true, memberNumber: true, status: true } });
@@ -68,15 +68,16 @@ export class SavingsService {
   }
 
   async updateAccountStatus(id: string, status: SavingsAccountStatus, actor: Actor) {
+    if (!['ADMIN', 'SUPER_ADMIN', 'TREASURER', 'GROUP_MANAGER'].includes(actor.role)) throw new ForbiddenException('Only savings administrators can change account status');
     const account = await this.accountOrThrow(id);
     const member = await this.memberOrThrow(account.groupMemberId);
     await this.assertMemberAccess(member, actor);
-    if (actor.role === 'MEMBER' && status !== SavingsAccountStatus.ACTIVE) throw new ForbiddenException('A member cannot close or freeze an account');
     return this.prisma.savingsAccount.update({ where: { id }, data: { status, closedAt: status === SavingsAccountStatus.CLOSED ? new Date() : null }, select: accountSelect });
   }
 
   async contribute(dto: RecordContributionDto, actor: Actor) {
     if (actor.role === 'MEMBER') throw new ForbiddenException('Use Pay contribution, complete online checkout, and submit your receipt for confirmation.');
+    if (new Prisma.Decimal(dto.amount).lte(0)) throw new ConflictException('Contribution amount must be positive');
     const contributionDate = dto.contributionDate ? new Date(dto.contributionDate) : new Date();
     if (Number.isNaN(contributionDate.valueOf())) throw new ConflictException('Invalid contribution date');
     const account = await this.accountOrThrow(dto.savingsAccountId);
@@ -96,15 +97,16 @@ export class SavingsService {
           currency,
         }, select: contributionSelect });
         await tx.transaction.create({ data: {
-          groupMemberId: member.id, contributionId: contribution.id, type: 'CONTRIBUTION', amount: new Prisma.Decimal(dto.amount),
+          groupId: member.groupId, groupMemberId: member.id, contributionId: contribution.id, type: 'CONTRIBUTION', amount: new Prisma.Decimal(dto.amount),
           currency,
           reference: `CONTR-${dto.reference.trim()}`, status: 'COMPLETED', occurredAt: contributionDate,
           metadata: { paymentMethod: dto.paymentMethod, description: dto.description?.trim() ?? null },
         } });
         await tx.savingsAccount.update({ where: { id: account.id }, data: { balance: { increment: new Prisma.Decimal(dto.amount) } } });
+        await tx.auditLog.create({ data: { userId: actor.sub, action: 'CONTRIBUTION_RECORDED', entityType: 'Contribution', entityId: contribution.id, newValues: { amount: dto.amount, currency, reference: dto.reference.trim(), paymentMethod: dto.paymentMethod } } });
         return contribution;
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-      await this.notifications.create(member.userId, 'Contribution recorded', `Your contribution of GHS ${dto.amount} was recorded successfully.`, 'CONTRIBUTION');
+      await this.notifications.create(member.userId, 'Contribution recorded', `Your contribution of SLE ${dto.amount} was recorded successfully.`, 'CONTRIBUTION');
       return contribution;
     } catch (error) {
       if (typeof error === 'object' && error && 'code' in error && error.code === 'P2002') throw new ConflictException('A contribution with this reference already exists');

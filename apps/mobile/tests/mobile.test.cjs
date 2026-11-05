@@ -5,6 +5,17 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 
+test('Admin replaces group manager and the dropdown has exactly three choices', () => {
+  const { ACCOUNT_ROLES, roleLabel } = loadModule('account-roles.ts');
+  assert.equal(JSON.stringify(ACCOUNT_ROLES), JSON.stringify([
+    { value: 'ADMIN', label: 'Admin' },
+    { value: 'TREASURER', label: 'Treasurer' },
+    { value: 'MEMBER', label: 'Member' },
+  ]));
+  assert.equal(roleLabel('GROUP_MANAGER'), 'Admin');
+  assert.equal(roleLabel('ADMIN'), 'Admin');
+});
+
 function loadModule(file, globals = {}, mocks = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../src', file), 'utf8');
   const code = ts.transpileModule(source, {
@@ -30,7 +41,51 @@ function loadModule(file, globals = {}, mocks = {}) {
   return module.exports;
 }
 const validation = loadModule('validation.ts');
+
+function googleAuthModule(environment, response, calls = []) {
+  const webClientId = 'test-client.apps.googleusercontent.com';
+  const sdk = {
+    GoogleOneTapSignIn: {
+      configure: (options) => calls.push(options),
+      checkPlayServices: async () => calls.push('play-services'),
+      presentExplicitSignIn: async () => response,
+    },
+    isSuccessResponse: (value) => value.type === 'success',
+    isCancelledResponse: (value) => value.type === 'cancelled',
+  };
+  return loadModule('google-auth.android.ts', {}, {
+    'expo-constants': {
+      __esModule: true,
+      default: { executionEnvironment: environment, expoConfig: { extra: { google: { webClientId } } } },
+      ExecutionEnvironment: { StoreClient: 'storeClient' },
+    },
+    'react-native-nitro-google-signin': sdk,
+  });
+}
+
+test('Google sign-in returns an ID token after configuring the Web client and checking Play services', async () => {
+  const calls = [];
+  const auth = googleAuthModule('standalone', { type: 'success', data: { idToken: 'verified-by-server' } }, calls);
+  assert.equal(await auth.googleIdToken(), 'verified-by-server');
+  assert.equal(calls[0].webClientId, 'test-client.apps.googleusercontent.com');
+  assert.equal(calls[1], 'play-services');
+});
+
+test('Google sign-in cancellation returns no token and missing tokens fail', async () => {
+  const cancelled = googleAuthModule('standalone', { type: 'cancelled' });
+  assert.equal(await cancelled.googleIdToken(), null);
+  const missing = googleAuthModule('standalone', { type: 'success', data: { idToken: null } });
+  await assert.rejects(missing.googleIdToken(), /could not complete sign-in/);
+});
+
+test('Google sign-in in Expo Go explains how to use the installed app without accessing native modules', async () => {
+  const calls = [];
+  const auth = googleAuthModule('storeClient', null, calls);
+  await assert.rejects(auth.googleIdToken(), /installed Rural Microfinance Android app/);
+  assert.equal(calls.length, 0);
+});
 const validRegistration = {
+  memberId: '2026001',
   firstName: 'Ama',
   lastName: 'Mensah',
   email: '',

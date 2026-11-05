@@ -13,14 +13,20 @@ import { LoansService } from './authorization/loans.service';
 import { ReportsController } from './authorization/reports.controller';
 import { ReportsService } from './authorization/reports.service';
 import { SystemController } from './authorization/system.controller';
+import { AdminOperationsController } from './authorization/admin-operations.controller';
+import { AdminOperationsService } from './authorization/admin-operations.service';
 import { UsersModule } from './users/users.module';
 import { GroupsModule } from './groups/groups.module';
 import { MembersModule } from './members/members.module';
+import { MemberSpaceController } from './members/member-space.controller';
+import { MemberSpaceService } from './members/member-space.service';
 import { SavingsModule } from './savings/savings.module';
 import { BlockchainModule } from './blockchain/blockchain.module';
 import { MeetingsModule } from './meetings/meetings.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { WorkflowModule } from './workflow/workflow.module';
+import { MonimePayoutService } from './authorization/monime-payout.service';
+import { MonimeWebhookController } from './authorization/monime-webhook.controller';
 
 @Module({
   imports: [
@@ -39,12 +45,15 @@ import { WorkflowModule } from './workflow/workflow.module';
   ],
   controllers: [
     HealthController,
+    MemberSpaceController,
     FinancialRecordsController,
     LoansController,
     AdminDashboardController,
     ReportsController,
     SystemController,
+    AdminOperationsController,
+    MonimeWebhookController,
   ],
-  providers: [LoansService, FinancialRecordsService, AdminDashboardService, ReportsService],
+  providers: [LoansService, FinancialRecordsService, AdminDashboardService, ReportsService, AdminOperationsService, MemberSpaceService, MonimePayoutService],
 })
 export class AppModule {}

@@ -25,7 +25,7 @@ async function signIn(page, account = 'member') {
   await page.goto('/');
   await page.getByRole('button', { name: 'Skip', exact: true }).click();
   await page
-    .getByLabel('Email address or phone number', { exact: true })
+    .getByLabel(/^(Member ID, email address or phone number|Email address or phone number)$/)
     .fill(fixture()[account].identifier);
   await page.getByLabel('Password', { exact: true }).fill(fixture().password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
@@ -126,7 +126,7 @@ test('member can use all financial and community screens with live services', as
   await capture(page, info, '09-members');
   await page.getByRole('button', { name: /Ama Mensah/ }).click();
   await expect(page.getByRole('heading', { name: 'Member details', exact: true })).toBeVisible();
-  await expect(page.getByText('Savings balance: GHS 0', { exact: true })).toBeVisible();
+  await expect(page.getByText('Savings balance: SLE 0', { exact: true })).toBeVisible();
   await capture(page, info, '09b-member-details');
 
   await page.getByRole('button', { name: 'Savings', exact: true }).first().click();
@@ -134,19 +134,19 @@ test('member can use all financial and community screens with live services', as
   await capture(page, info, '10-savings');
   await page.getByRole('button', { name: 'View contributions', exact: true }).click();
   await expect(page.getByText('No contributions recorded.', { exact: true })).toBeVisible();
-  await page.getByLabel('Contribution amount (GHS)', { exact: true }).fill('12.50');
+  await page.getByLabel('Contribution amount (SLE)', { exact: true }).fill('12.50');
   await page.getByLabel('Description (optional)', { exact: true }).fill('Weekly savings');
   await page.getByRole('button', { name: 'Record contribution', exact: true }).click();
   await expect(page.getByText('Contribution recorded', { exact: true })).toBeVisible();
   await dismiss(page);
-  await expect(page.getByText('Balance: GHS 12.5', { exact: true })).toBeVisible();
+  await expect(page.getByText('Balance: SLE 12.5', { exact: true })).toBeVisible();
   await capture(page, info, '11-contributions');
 
   await page.getByRole('button', { name: 'Loans', exact: true }).first().click();
   await expect(page.getByText('No created loans found.', { exact: true })).toBeVisible();
   await capture(page, info, '12-loans-empty');
   await page.getByRole('button', { name: 'Apply for a loan', exact: true }).click();
-  await page.getByLabel('Loan amount (GHS)', { exact: true }).fill('100');
+  await page.getByLabel('Loan amount (SLE)', { exact: true }).fill('100');
   await page.getByLabel('Purpose', { exact: true }).fill('Buy seeds for the next harvest');
   await page.getByLabel('Duration (months)', { exact: true }).fill('6');
   await capture(page, info, '13-loan-application');
@@ -188,7 +188,7 @@ test('member can use all financial and community screens with live services', as
   });
   await page.getByRole('button', { name: 'Loans', exact: true }).first().click();
   await page.getByRole('button', { name: 'View loan details', exact: true }).click();
-  await expect(page.getByText('Outstanding: GHS 100 · 6 months', { exact: true })).toBeVisible();
+  await expect(page.getByText('Outstanding: SLE 100 · 6 months', { exact: true })).toBeVisible();
   await capture(page, info, '14-loan-details');
   await page.getByRole('button', { name: 'Refresh / Retry', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Loan details', exact: true })).toBeVisible();
@@ -197,7 +197,7 @@ test('member can use all financial and community screens with live services', as
   await page.getByRole('button', { name: 'Record repayment', exact: true }).click();
   await expect(page.getByText('Repayment recorded', { exact: true })).toBeVisible();
   await dismiss(page);
-  await expect(page.getByText('Outstanding: GHS 75 · 6 months', { exact: true })).toBeVisible();
+  await expect(page.getByText('Outstanding: SLE 75 · 6 months', { exact: true })).toBeVisible();
   expect((await api(request, '/loans/' + loan.id, { session: member })).outstandingBalance).toBe(
     '75',
   );
@@ -255,7 +255,7 @@ test('member can use all financial and community screens with live services', as
   await capture(page, info, '20-notifications');
   await home(page);
   await page.getByRole('button', { name: 'Reports', exact: true }).click();
-  await expect(page.getByText('Balance: GHS 12.5', { exact: true })).toBeVisible();
+  await expect(page.getByText('Balance: SLE 12.5', { exact: true })).toBeVisible();
   await capture(page, info, '21-reports');
   await home(page);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -287,7 +287,7 @@ test('registration, validation, keyboard navigation and delivered reset link wor
   await page.getByRole('button', { name: 'Next', exact: true }).click();
   await page.getByRole('button', { name: 'Get started', exact: true }).click();
   await capture(page, info, '03-login');
-  await page.getByLabel('Email address or phone number', { exact: true }).focus();
+  await page.getByLabel(/^(Member ID, email address or phone number|Email address or phone number)$/).focus();
   await page.keyboard.press('Tab');
   await expect(page.getByLabel('Password', { exact: true })).toBeFocused();
   await page.getByRole('button', { name: 'New here? Create an account', exact: true }).click();
@@ -307,7 +307,7 @@ test('registration, validation, keyboard navigation and delivered reset link wor
   await expect(page.getByRole('heading', { name: 'My Dashboard', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Logout', exact: true }).click();
   await page.getByRole('button', { name: 'Forgot password?', exact: true }).click();
-  await page.getByLabel('Email address or phone number', { exact: true }).fill(phone);
+  await page.getByLabel(/^(Member ID, email address or phone number|Email address or phone number)$/).fill(phone);
   await capture(page, info, '05-forgot-password');
   await page.getByRole('button', { name: 'Send reset instructions', exact: true }).click();
   await expect(page.getByText('Request received', { exact: true })).toBeVisible();
@@ -325,7 +325,7 @@ test('registration, validation, keyboard navigation and delivered reset link wor
   await expect(page.getByText('Password changed', { exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Welcome back', exact: true })).toBeVisible();
   await dismiss(page);
-  await page.getByLabel('Email address or phone number', { exact: true }).fill(phone);
+  await page.getByLabel(/^(Member ID, email address or phone number|Email address or phone number)$/).fill(phone);
   await page.getByLabel('Password', { exact: true }).fill('UpdatedReviewA1!');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'My Dashboard', exact: true })).toBeVisible();

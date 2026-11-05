@@ -13,6 +13,7 @@ test('a registered account can log out, sign in repeatedly, and recover from dup
   const email = `existing-account-${Date.now()}@acceptance.test`;
   const phone = '+232' + String(Date.now()).slice(-8);
   const account = {
+    memberId: `REUSE-${Date.now()}`,
     firstName: 'Existing',
     lastName: 'Account',
     email,
@@ -33,7 +34,7 @@ test('a registered account can log out, sign in repeatedly, and recover from dup
     data: { refreshToken: original.refreshToken },
   });
   expect(exited.ok()).toBe(true);
-  for (const identifier of [email.toUpperCase(), phone, email]) {
+  for (const identifier of [account.memberId, email.toUpperCase(), phone, email]) {
     const started = Date.now();
     const signedIn = await request.post(fixture.apiOrigin + '/api/auth/login', {
       data: { identifier, password: fixture.password },
@@ -54,6 +55,7 @@ test('a registered account can log out, sign in repeatedly, and recover from dup
   });
   await page.goto('/?signIn=1', { waitUntil: 'domcontentloaded', timeout: 90000 });
   await page.getByRole('button', { name: 'New here? Create an account', exact: true }).click();
+  await page.getByLabel('Member ID (required, e.g. 2026001)', { exact: true }).fill(account.memberId);
   await page.getByLabel('First name', { exact: true }).fill(account.firstName);
   await page.getByLabel('Last name', { exact: true }).fill(account.lastName);
   await page.getByLabel('Email address', { exact: true }).fill(email);
@@ -61,10 +63,11 @@ test('a registered account can log out, sign in repeatedly, and recover from dup
   await page.getByLabel('Confirm password', { exact: true }).fill(fixture.password);
   await page.getByRole('button', { name: 'Create account', exact: true }).click();
   await expect(page.getByText('Account already registered', { exact: true })).toBeVisible();
-  await expect(page.getByLabel('Email address or phone number', { exact: true })).toHaveValue(
-    email,
+  await expect(page.getByLabel(/^(Member ID, email address or phone number|Email address or phone number)$/)).toHaveValue(
+    account.memberId,
   );
   await page.getByRole('button', { name: 'Dismiss message', exact: true }).click();
+  await page.getByLabel('Password', { exact: true }).fill(fixture.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'My Dashboard', exact: true })).toBeVisible({
     timeout: 60000,
@@ -72,7 +75,7 @@ test('a registered account can log out, sign in repeatedly, and recover from dup
   await expect(page.getByRole('progressbar')).toHaveCount(0, { timeout: 60000 });
   await page.getByRole('button', { name: 'Logout', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Welcome back', exact: true })).toBeVisible();
-  await page.getByLabel('Email address or phone number', { exact: true }).fill(phone);
+  await page.getByLabel(/^(Member ID, email address or phone number|Email address or phone number)$/).fill(phone);
   await page.getByLabel('Password', { exact: true }).fill(fixture.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'My Dashboard', exact: true })).toBeVisible({

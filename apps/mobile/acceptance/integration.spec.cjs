@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
 async function signIn(page, kind = 'member') {
   await page.goto('/?signIn=1');
   await page
-    .getByLabel('Email address or phone number', { exact: true })
+    .getByLabel(/^(Member ID, email address or phone number|Email address or phone number)$/)
     .fill(fixture()[kind].identifier);
   await page.getByLabel('Password', { exact: true }).fill(fixture().password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
@@ -94,7 +94,7 @@ test('revoked sessions return to sign-in and offline logout clears local credent
   expect(await page.evaluate((key) => sessionStorage.getItem(key), SESSION_KEY)).toBeNull();
   await dismiss(page);
   await page
-    .getByLabel('Email address or phone number', { exact: true })
+    .getByLabel(/^(Member ID, email address or phone number|Email address or phone number)$/)
     .fill(fixture().member.identifier);
   await page.getByLabel('Password', { exact: true }).fill(fixture().password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();

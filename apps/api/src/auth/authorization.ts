@@ -5,6 +5,7 @@ export const PERMISSIONS = [
   'financial:read',
   'financial:write',
   'loans:manage',
+  'loans:execute',
   'loans:read',
   'administrators:manage',
   'settings:manage',
@@ -18,16 +19,20 @@ export const PERMISSIONS = [
   'meetings:read',
   'meetings:manage',
   'notifications:read',
+  'audit:read',
+  'withdrawals:manage',
+  'withdrawals:review',
+  'cycles:manage',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
 const rolePermissions: Record<RoleName, readonly Permission[]> = {
   MEMBER: ['groups:read', 'members:read', 'financial:read', 'financial:write', 'loans:read', 'meetings:read', 'notifications:read'],
-  GROUP_MANAGER: ['groups:read', 'groups:manage', 'members:read', 'members:manage', 'financial:read', 'financial:write', 'loans:read', 'loans:manage', 'meetings:read', 'meetings:manage', 'notifications:read'],
-  TREASURER: ['financial:read', 'financial:write', 'loans:read', 'loans:manage', 'notifications:read'],
+  GROUP_MANAGER: ['groups:read', 'groups:manage', 'members:read', 'members:manage', 'financial:read', 'financial:write', 'loans:read', 'loans:manage', 'loans:execute', 'meetings:read', 'meetings:manage', 'notifications:read'],
+  TREASURER: ['financial:read', 'financial:write', 'loans:read', 'loans:execute', 'withdrawals:review', 'notifications:read'],
   AUDITOR: ['financial:read', 'notifications:read'],
-  LOAN_OFFICER: ['loans:read', 'loans:manage', 'notifications:read'],
-  ADMIN: ['users:read', 'users:manage', 'groups:read', 'groups:manage', 'members:read', 'members:manage', 'financial:read', 'financial:write', 'loans:read', 'loans:manage', 'meetings:read', 'meetings:manage', 'notifications:read'],
+  LOAN_OFFICER: ['loans:read', 'loans:manage', 'loans:execute', 'notifications:read'],
+  ADMIN: ['users:read', 'users:manage', 'groups:read', 'groups:manage', 'members:read', 'members:manage', 'financial:read', 'financial:write', 'loans:read', 'loans:manage', 'loans:execute', 'meetings:read', 'meetings:manage', 'notifications:read', 'settings:manage', 'audit:read', 'withdrawals:manage', 'withdrawals:review', 'cycles:manage'],
   SUPER_ADMIN: PERMISSIONS,
 };
 

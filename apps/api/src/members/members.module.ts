@@ -3,5 +3,5 @@ import { AuthModule } from '../auth/auth.module';
 import { MembersController } from './members.controller';
 import { MembersService } from './members.service';
 
-@Module({ imports: [AuthModule], controllers: [MembersController], providers: [MembersService] })
+@Module({ imports: [AuthModule], controllers: [MembersController], providers: [MembersService], exports: [MembersService] })
 export class MembersModule {}

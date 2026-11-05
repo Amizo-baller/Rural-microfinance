@@ -2,16 +2,42 @@
   "expo": {
     "name": "Rural Microfinance",
     "slug": "rural-microfinance",
+    "android": {
+      "package": "com.ruralcommunity.microfinance"
+    },
+    "ios": {
+      "infoPlist": { "LSApplicationQueriesSchemes": ["metamask"] }
+    },
     "version": "0.1.0",
     "orientation": "portrait",
     "scheme": "ruralmicrofinance",
     "userInterfaceStyle": "light",
     "plugins": [
       "expo-router",
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#003D32"
+        }
+      ],
+      "./plugins/with-android-build-memory.cjs"
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "google": {
+        "androidClientId": "749463098757-r2e0o891dum0fhim2pqvfccms9k0r3hc.apps.googleusercontent.com",
+        "webClientId": "749463098757-k1rt62cfef6vs05j5sb6kupborrvuoqm.apps.googleusercontent.com"
+      },
+      "eas": {
+        "projectId": "9a71cbc4-c05b-4dae-a55c-be5becf55b31"
+      }
     }
   }
 }

@@ -8,6 +8,7 @@ import { StartPaymentDto, ReviewPaymentDto } from './dto';
 export type WorkflowActor = { sub: string; role: string };
 export const REVIEW_ROLES = ['TREASURER', 'GROUP_MANAGER', 'ADMIN', 'SUPER_ADMIN'];
 const memberSelect = { id: true, memberId: true, firstName: true, lastName: true } as const;
+type SettlementPayment = Prisma.PaymentSubmissionGetPayload<{ include: { user: { select: typeof memberSelect } } }>;
 
 @Injectable()
 export class WorkflowService {
@@ -49,7 +50,7 @@ export class WorkflowService {
       this.prisma.paymentSubmission.count({ where: { ...this.paymentScope(actor), status: 'SUBMITTED' } }),
       this.prisma.loan.findMany({ where: { groupMember: { userId: actor.sub }, status: 'ACTIVE' }, select: { id: true, loanReference: true, outstandingBalance: true, currency: true } }),
     ]);
-    return { memberId: user.memberId, totalSavings: total._sum.balance ?? 0, groupSavings: groupTotal._sum.balance ?? 0, unread, pending, canReview: this.reviewer(actor), gatewayConfigured: this.gateway.configured(), loans };
+    return { memberId: user.memberId, totalSavings: total._sum.balance ?? 0, groupSavings: groupTotal._sum.balance ?? 0, unread, pending, canReview: this.reviewer(actor), gatewayConfigured: this.gateway.configured(), gatewayMode: this.gateway.mode(), automaticPayments: this.gateway.mode() === 'live', loans };
   }
   async start(dto: StartPaymentDto, actor: WorkflowActor) {
     const { user, membership } = await this.ownedMember(dto.memberId, actor);
@@ -63,27 +64,38 @@ export class WorkflowService {
       currency = loan.currency;
     }
     const reference = `PAY-${dto.requestId}`;
+    const weekStart = dto.kind === 'CONTRIBUTION' ? this.week(dto.weekStart) : null;
+    if (weekStart) {
+      const joinedWeek = new Date(membership.joinedAt);
+      joinedWeek.setUTCHours(0, 0, 0, 0);
+      joinedWeek.setUTCDate(joinedWeek.getUTCDate() - (joinedWeek.getUTCDay() + 6) % 7);
+      if (weekStart < joinedWeek) throw new BadRequestException('Choose a contribution week on or after joining your group.');
+    }
     let row = await this.prisma.paymentSubmission.findUnique({ where: { reference } });
-    if (row && (row.userId !== actor.sub || row.kind !== dto.kind || !row.amount.equals(amount) || row.loanId !== (dto.loanId ?? null))) throw new ConflictException('This payment reference is already in use for different details.');
+    if (row && (row.userId !== actor.sub || row.groupId !== membership.groupId || row.kind !== dto.kind || !row.amount.equals(amount) || row.loanId !== (dto.kind === 'REPAYMENT' ? dto.loanId ?? null : null) || (row.weekStart?.getTime() ?? null) !== (weekStart?.getTime() ?? null))) throw new ConflictException('This payment reference is already in use for different details.');
     const email = dto.receiptEmail?.trim() || user.email;
     if (!email) throw new BadRequestException('Enter an email address for the gateway payment receipt.');
     if (!row) {
-      try { row = await this.prisma.paymentSubmission.create({ data: { userId: actor.sub, groupId: membership.groupId, loanId: dto.kind === 'REPAYMENT' ? dto.loanId : null, kind: dto.kind, currency, amount, reference, weekStart: dto.kind === 'CONTRIBUTION' ? this.week(dto.weekStart) : null } }); }
+      try { row = await this.prisma.paymentSubmission.create({ data: { userId: actor.sub, groupId: membership.groupId, loanId: dto.kind === 'REPAYMENT' ? dto.loanId : null, kind: dto.kind, currency, amount, reference, weekStart } }); }
       catch (error) { if ((error as { code?: string }).code === 'P2002') throw new ConflictException('This payment request is already being started. Refresh and use its existing checkout.'); throw error; }
     }
     if (row.status !== 'AWAITING_PAYMENT') return this.payment(row.id, actor);
     if (!row.checkoutUrl) {
       const checkout = await this.gateway.checkout(reference, amount, email, `${user.firstName} ${user.lastName}`, row.currency);
-      await this.prisma.paymentSubmission.update({ where: { id: row.id }, data: { gateway: checkout.gateway, checkoutUrl: checkout.url } });
+      await this.prisma.paymentSubmission.update({ where: { id: row.id }, data: { gateway: checkout.gateway, checkoutUrl: checkout.url, gatewayId: checkout.gatewayId } });
     }
     return this.payment(row.id, actor);
   }
   async verifyPayment(id: string, actor: WorkflowActor) {
     const row = await this.payment(id, actor);
     if (row.userId !== actor.sub) throw new ForbiddenException('Only the paying member can verify this checkout.');
+    if (row.gateway === 'monime' && this.gateway.mode() === 'live') {
+      await this.synchronizeMonimePayment(id);
+      return this.payment(id, actor);
+    }
     if (row.gatewayPaidAt) return row;
     if (!row.gateway) throw new ConflictException('Start online checkout first.');
-    const gatewayId = await this.gateway.verify(row.reference, row.amount, row.gateway, row.currency);
+    const gatewayId = await this.gateway.verify(row.reference, row.amount, row.gateway, row.currency, row.gatewayId);
     try {
       await this.prisma.paymentSubmission.updateMany({ where: { id, status: 'AWAITING_PAYMENT', gatewayPaidAt: null }, data: { status: 'PAID', gatewayId, gatewayPaidAt: new Date() } });
     } catch (error) { if ((error as { code?: string }).code === 'P2002') throw new ConflictException('This gateway transaction has already been used.'); throw error; }
@@ -115,6 +127,32 @@ export class WorkflowService {
   }
   async receipt(id: string, actor: WorkflowActor) { const row = await this.payment(id, actor, true); return { receipt: row.receipt }; }
 
+  // Only stored, member-linked live checkouts can authorize automatic credits.
+  // A browser redirect, screenshot, or claimed payment status is never sufficient.
+  async synchronizeMonimePayment(id: string) {
+    if (this.gateway.mode() !== 'live') return;
+    const row = await this.prisma.paymentSubmission.findUnique({ where: { id }, include: { user: { select: memberSelect } } });
+    if (!row || row.gateway !== 'monime' || !row.gatewayId || row.transactionId ||
+        !['AWAITING_PAYMENT', 'PAID', 'SUBMITTED'].includes(row.status)) return;
+    await this.gateway.verify(row.reference, row.amount, row.gateway, row.currency, row.gatewayId);
+    const gatewayPaidAt = row.gatewayPaidAt ?? new Date();
+    // Preserve a verified receipt of funds even if accounting is blocked (for
+    // example, a frozen savings account). PAID alone never increases savings.
+    await this.prisma.paymentSubmission.updateMany({ where: { id, gateway: 'monime', gatewayId: row.gatewayId,
+      status: 'AWAITING_PAYMENT', gatewayPaidAt: null, transactionId: null }, data: { status: 'PAID', gatewayPaidAt } });
+    try {
+      await this.applyPayment({ ...row, gatewayPaidAt },
+        { decision: 'CONFIRM', notes: 'Automatically verified with Monime' }, null);
+    } catch (error) {
+      if (['P2034', 'P2002'].includes((error as { code?: string })?.code ?? '')) {
+        const current = await this.prisma.paymentSubmission.findUnique({ where: { id } });
+        if (current?.status === 'CONFIRMED' && current.transactionId) return;
+        throw new ConflictException('Payment accounting is being updated. Retry shortly.');
+      }
+      throw error;
+    }
+  }
+
   async review(id: string, dto: ReviewPaymentDto, actor: WorkflowActor) {
     if (!this.reviewer(actor)) throw new ForbiddenException('Treasurer or group manager confirmation is required.');
     const row = await this.payment(id, actor, true);
@@ -122,14 +160,24 @@ export class WorkflowService {
     if (row.status !== 'SUBMITTED' || !row.receipt || !row.gatewayPaidAt || !row.gateway) throw new ConflictException('A verified payment and submitted receipt are required.');
     if (dto.decision === 'REJECT' && !dto.notes?.trim()) throw new BadRequestException('State the reason for rejecting this receipt.');
     // Recheck the provider before applying a credit; member screenshots cannot authorize a credit.
-    await this.gateway.verify(row.reference, row.amount, row.gateway, row.currency);
+    await this.gateway.verify(row.reference, row.amount, row.gateway, row.currency, row.gatewayId);
+    await this.applyPayment(row, dto, actor);
+    return this.payment(id, actor);
+  }
+
+  private async applyPayment(row: SettlementPayment, dto: ReviewPaymentDto, actor: WorkflowActor | null) {
+    const id = row.id;
+    const automatic = actor === null;
     const reviewedAt = new Date();
     await this.prisma.$transaction(async (tx) => {
-      const claimed = await tx.paymentSubmission.updateMany({ where: { id, status: 'SUBMITTED' }, data: { status: dto.decision === 'CONFIRM' ? 'CONFIRMED' : 'REJECTED', reviewedAt, reviewerId: actor.sub, reviewNotes: dto.notes?.trim() } });
-      if (!claimed.count) throw new ConflictException('This payment was already reviewed.');
+      const claimed = await tx.paymentSubmission.updateMany({ where: { id, transactionId: null, status: automatic ? { in: ['AWAITING_PAYMENT', 'PAID', 'SUBMITTED'] } : 'SUBMITTED', ...(automatic ? { gateway: 'monime', gatewayId: row.gatewayId } : {}) }, data: { status: dto.decision === 'CONFIRM' ? 'CONFIRMED' : 'REJECTED', gatewayPaidAt: row.gatewayPaidAt, reviewedAt, reviewerId: actor?.sub ?? null, reviewNotes: dto.notes?.trim() } });
+      if (!claimed.count) {
+        if (automatic) return;
+        throw new ConflictException('This payment was already reviewed.');
+      }
       if (dto.decision === 'REJECT') {
         await tx.notification.create({ data: { userId: row.userId, title: 'Receipt needs correction', message: `Payment ${row.reference}: ${dto.notes}. Your gateway payment remains recorded; correct the receipt and resubmit or contact the treasurer.`, type: 'GENERAL', status: 'SENT', sentAt: reviewedAt } });
-        await tx.auditLog.create({ data: { userId: actor.sub, action: 'PAYMENT_RECEIPT_REJECTED', entityType: 'PaymentSubmission', entityId: id, newValues: { notes: dto.notes ?? '', reviewedAt: reviewedAt.toISOString() } } });
+        await tx.auditLog.create({ data: { userId: actor?.sub, action: 'PAYMENT_RECEIPT_REJECTED', entityType: 'PaymentSubmission', entityId: id, newValues: { notes: dto.notes ?? '', reviewedAt: reviewedAt.toISOString() } } });
         return;
       }
       const membership = await tx.groupMember.findFirst({ where: { userId: row.userId, groupId: row.groupId, status: 'ACTIVE', group: { status: 'ACTIVE' } } });
@@ -138,7 +186,7 @@ export class WorkflowService {
       if (row.kind === 'CONTRIBUTION') {
         const account = await tx.savingsAccount.upsert({ where: { groupMemberId_currency: { groupMemberId: membership.id, currency: 'SLE' } }, create: { groupMemberId: membership.id, currency: 'SLE', accountNumber: `SAV-SLE-${membership.id.replaceAll('-', '').toUpperCase()}` }, update: {} });
         if (account.status !== 'ACTIVE') throw new ConflictException('The savings account is not active.');
-        const entry = await tx.contribution.create({ data: { savingsAccountId: account.id, groupMemberId: membership.id, currency: row.currency, amount: row.amount, reference: row.reference, contributionDate: row.gatewayPaidAt!, paymentMethod: 'CARD', description: `Weekly contribution: ${row.weekStart?.toISOString().slice(0,10)}`, status: 'CONFIRMED' } });
+        const entry = await tx.contribution.create({ data: { savingsAccountId: account.id, groupMemberId: membership.id, currency: row.currency, amount: row.amount, reference: row.reference, contributionDate: row.gatewayPaidAt!, paymentMethod: 'OTHER', description: `Weekly contribution: ${row.weekStart?.toISOString().slice(0,10)}`, status: 'CONFIRMED' } });
         contributionId = entry.id;
         await tx.savingsAccount.update({ where: { id: account.id }, data: { balance: { increment: row.amount } } });
       } else {
@@ -150,7 +198,7 @@ export class WorkflowService {
         const entry = await tx.loanRepayment.create({ data: { loanId: loan.id, groupMemberId: membership.id, currency: row.currency, amount: row.amount, principalPaid: row.amount, interestPaid: 0, paidAt: row.gatewayPaidAt!, reference: row.reference, status: 'CONFIRMED' } });
         repaymentId = entry.id;
       }
-      const transaction = await tx.transaction.create({ data: { groupId: row.groupId, groupMemberId: membership.id, contributionId, loanRepaymentId: repaymentId, loanId: row.loanId, type: row.kind === 'CONTRIBUTION' ? 'CONTRIBUTION' : 'LOAN_REPAYMENT', amount: row.amount, currency: row.currency, reference: row.reference, status: 'COMPLETED', occurredAt: row.gatewayPaidAt!, description: `Verified online ${row.kind.toLowerCase()} confirmed ${reviewedAt.toISOString()}`, metadata: { proofVersion: 2, paymentId: id, reviewerId: actor.sub, reviewedAt: reviewedAt.toISOString(), gateway: row.gateway, gatewayId: row.gatewayId, weekStart: row.weekStart?.toISOString() ?? null } } });
+      const transaction = await tx.transaction.create({ data: { groupId: row.groupId, groupMemberId: membership.id, contributionId, loanRepaymentId: repaymentId, loanId: row.loanId, type: row.kind === 'CONTRIBUTION' ? 'CONTRIBUTION' : 'LOAN_REPAYMENT', amount: row.amount, currency: row.currency, reference: row.reference, status: 'COMPLETED', occurredAt: row.gatewayPaidAt!, description: `Verified online ${row.kind.toLowerCase()} confirmed ${reviewedAt.toISOString()}`, metadata: { proofVersion: 2, paymentId: id, reviewerId: actor?.sub ?? null, automatic, reviewedAt: reviewedAt.toISOString(), gateway: row.gateway, gatewayId: row.gatewayId, weekStart: row.weekStart?.toISOString() ?? null } } });
       await tx.paymentSubmission.update({ where: { id }, data: { transactionId: transaction.id } });
       const groupTotal = await tx.savingsAccount.aggregate({ where: { currency: 'SLE', groupMember: { groupId: row.groupId } }, _sum: { balance: true } });
       const memberTotal = await tx.savingsAccount.aggregate({ where: { currency: 'SLE', groupMemberId: membership.id }, _sum: { balance: true } });
@@ -158,8 +206,7 @@ export class WorkflowService {
       const canonical = JSON.stringify({ version: 2, id: transaction.id, reference: transaction.reference, type: transaction.type, amount: transaction.amount.toString(), currency: transaction.currency, groupId: transaction.groupId, groupMemberId: transaction.groupMemberId, occurredAt: transaction.occurredAt.toISOString(), status: transaction.status, description: transaction.description });
       await tx.proofDelivery.create({ data: { reference: transaction.reference, recordHash: keccak256(toUtf8Bytes(canonical)), transactionType: transaction.type, payload: { userId: row.userId, groupId: row.groupId, transactionId: transaction.id, kind: row.kind, currency: row.currency, amount: row.amount.toString(), groupSavings, memberSavings, reviewedAt: reviewedAt.toISOString() } } });
       await tx.notification.create({ data: { userId: row.userId, title: 'Payment successfully confirmed', message: `${row.currency} ${row.amount.toFixed(2)} confirmed at ${reviewedAt.toISOString()}. Your savings: SLE ${memberSavings}. Community savings: SLE ${groupSavings}. Blockchain verification pending.`, type: row.kind === 'CONTRIBUTION' ? 'CONTRIBUTION' : 'REPAYMENT', status: 'SENT', sentAt: reviewedAt, dedupeKey: `payment-confirmed:${id}` } });
-      await tx.auditLog.create({ data: { userId: actor.sub, action: 'PAYMENT_CONFIRMED', entityType: 'PaymentSubmission', entityId: id, newValues: { transactionId: transaction.id, reviewedAt: reviewedAt.toISOString(), memberSavings, groupSavings } } });
+      await tx.auditLog.create({ data: { userId: actor?.sub, action: 'PAYMENT_CONFIRMED', entityType: 'PaymentSubmission', entityId: id, newValues: { transactionId: transaction.id, reviewedAt: reviewedAt.toISOString(), memberSavings, groupSavings, automatic, gateway: row.gateway } } });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    return this.payment(id, actor);
   }
 }

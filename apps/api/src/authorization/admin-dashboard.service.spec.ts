@@ -43,6 +43,7 @@ describe('AdminDashboardService', () => {
     expect(dashboard.metrics.totalGroups).toBe(12);
     expect(dashboard.metrics.totalMembers).toBe(80);
     expect(dashboard.metrics.totalSavings).toBe(125000);
+    expect(prisma.savingsAccount.aggregate).toHaveBeenCalledWith({ where: { currency: 'SLE' }, _sum: { balance: true } });
     expect(dashboard.metrics.totalLoans).toBe(24);
     expect(dashboard.metrics.outstandingLoans).toBe(55000);
     expect(dashboard.metrics.totalRepayments).toBe(35000);

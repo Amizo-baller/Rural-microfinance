@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { NotificationType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { CreateAnnouncementDto, ListNotificationsDto } from './dto';
@@ -39,9 +39,14 @@ export class NotificationsService {
   }
 
   async announce(dto: CreateAnnouncementDto, actor: Actor) {
+    if (!dto.title.trim() || !dto.message.trim()) throw new BadRequestException('Announcement title and message are required');
     const group = await this.prisma.communityGroup.findUnique({ where: { id: dto.groupId }, select: { managerId: true, members: { where: { status: 'ACTIVE' }, select: { userId: true } } } });
     if (!group) throw new NotFoundException('Group not found');
     if (!['ADMIN', 'SUPER_ADMIN'].includes(actor.role) && group.managerId !== actor.sub) throw new ForbiddenException('Only the group manager or an administrator can announce');
-    return this.createMany(group.members.map((member) => member.userId), dto.title.trim(), dto.message.trim(), NotificationType.GENERAL);
+    return this.prisma.$transaction(async (tx) => {
+      const result = await tx.notification.createMany({ data: group.members.map((member) => ({ userId: member.userId, title: dto.title.trim(), message: dto.message.trim(), type: NotificationType.GENERAL, status: 'SENT' as const, sentAt: new Date() })) });
+      await tx.auditLog.create({ data: { userId: actor.sub, action: 'ANNOUNCEMENT_SENT', entityType: 'CommunityGroup', entityId: dto.groupId, newValues: { title: dto.title.trim(), message: dto.message.trim(), recipients: result.count } } });
+      return result;
+    });
   }
 }

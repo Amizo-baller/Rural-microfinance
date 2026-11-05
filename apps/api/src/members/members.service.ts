@@ -36,6 +36,15 @@ export class MembersService {
 
   async create(dto: CreateMemberDto, actor: Actor) {
     await this.assertGroupManager(dto.groupId, actor);
+    return this.enroll(dto, actor);
+  }
+
+  async join(groupId: string, actor: Actor) {
+    if (actor.role !== 'MEMBER') throw new ForbiddenException('Only members can join a group');
+    return this.enroll({ groupId, userId: actor.sub }, actor);
+  }
+
+  private async enroll(dto: CreateMemberDto, actor: Actor) {
     const [user, group, existing] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: dto.userId }, include: { role: true } }),
       this.prisma.communityGroup.findUnique({ where: { id: dto.groupId } }),
@@ -50,10 +59,17 @@ export class MembersService {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         return await this.prisma.$transaction(async (tx) => {
+          const currentGroup = await tx.communityGroup.findUnique({ where: { id: dto.groupId } });
+          const currentUser = await tx.user.findUnique({ where: { id: dto.userId }, include: { role: true } });
+          if (!currentGroup || currentGroup.status !== 'ACTIVE' || !currentUser || currentUser.status !== 'ACTIVE' || currentUser.role.name !== 'MEMBER') throw new ConflictException('The member or group is no longer active');
           const count = await tx.groupMember.count({ where: { groupId: dto.groupId } });
-          return tx.groupMember.create({ data: { userId: dto.userId, groupId: dto.groupId, memberNumber: `MBR-${String(count + 1).padStart(6, '0')}` }, select: memberSelect });
+          const member = await tx.groupMember.create({ data: { userId: dto.userId, groupId: dto.groupId, memberNumber: `MBR-${String(count + 1).padStart(6, '0')}` }, select: memberSelect });
+          await tx.notification.create({ data: { userId: dto.userId, type: 'GENERAL', title: 'Group membership active', message: `You have joined ${group.name}.`, status: 'SENT', sentAt: new Date() } });
+          await tx.auditLog.create({ data: { userId: actor.sub, action: 'MEMBERSHIP_APPROVED', entityType: 'GroupMember', entityId: member.id, newValues: { userId: dto.userId, groupId: dto.groupId } } });
+          return member;
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
       } catch (error) {
+        if ((error as { code?: string }).code === 'P2034') continue;
         if (!(typeof error === 'object' && error && 'code' in error && error.code === 'P2002')) throw error;
         const assigned = await this.prisma.groupMember.findUnique({ where: { userId: dto.userId } });
         if (assigned) throw new ConflictException('This user already belongs to a community group');
@@ -104,6 +120,10 @@ export class MembersService {
   async updateStatus(id: string, status: MemberStatus, actor: Actor) {
     const member = await this.memberOrThrow(id);
     await this.assertGroupManager(member.groupId, actor);
-    return this.prisma.groupMember.update({ where: { id }, data: { status, ...(status === 'EXITED' ? { exitedAt: new Date() } : { exitedAt: null }) }, select: memberSelect });
+    return this.prisma.$transaction(async (tx) => {
+      const result = await tx.groupMember.update({ where: { id }, data: { status, ...(status === 'EXITED' ? { exitedAt: new Date() } : { exitedAt: null }) }, select: memberSelect });
+      await tx.auditLog.create({ data: { userId: actor.sub, action: 'MEMBERSHIP_STATUS_CHANGED', entityType: 'GroupMember', entityId: id, newValues: { status } } });
+      return result;
+    });
   }
 }

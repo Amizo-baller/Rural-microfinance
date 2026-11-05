@@ -8,7 +8,7 @@ describe('UsersService access rules', () => {
   let service: UsersService;
 
   beforeEach(() => {
-    prisma = { user: { findUnique: jest.fn(), findFirst: jest.fn(), update: jest.fn() }, authToken: { updateMany: jest.fn() }, $transaction: jest.fn() };
+    prisma = { user: { findUnique: jest.fn(), findFirst: jest.fn(), update: jest.fn() }, authToken: { updateMany: jest.fn() }, auditLog: { create: jest.fn() }, $transaction: jest.fn((work) => typeof work === 'function' ? work(prisma) : Promise.all(work)) };
     service = new UsersService(prisma);
   });
 

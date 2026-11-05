@@ -1,9 +1,20 @@
 import { Dashboard, dashboardGroupName, formatSle } from '../src/dashboard';
 import { LoanDashboard } from '../src/loan-dashboard';
-import { openMetaMask } from '../src/metamask';
+import { MemberSpace } from '../src/member-space';
+import { GroupMemberPolicy } from '../src/group-member-policy';
+import { AdminConsole } from '../src/admin-console';
+import { TreasurerConsole } from '../src/treasurer-console';
+import { RoleDropdown, type AccountRole } from '../src/role-dropdown';
+import { roleLabel } from '../src/account-roles';
+import { WalletAuth, useWalletSessionGuard } from '../src/wallet-auth';
+import { endWalletConnection, invalidateWalletRequest, selectWallet } from '../src/metamask';
+import { googleIdToken } from '../src/google-auth';
+import { GoogleSignInButton } from '../src/google-sign-in-button';
+import { DateField } from '../src/date-field';
 import { PaymentWorkflow, type WorkflowSummary } from '../src/payment-workflow';
 import { assertPage, mergeRecords, RequestTracker } from '../src/integration-state';
 import { useLocalSearchParams } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
@@ -11,6 +22,7 @@ import {
   Keyboard,
   Platform,
   ActivityIndicator,
+  Image,
   BackHandler,
   Pressable,
   RefreshControl,
@@ -44,6 +56,7 @@ type Screen =
   | 'register'
   | 'forgot'
   | 'dashboard'
+  | 'memberSpace'
   | 'profile'
   | 'groups'
   | 'groupDetail'
@@ -65,11 +78,13 @@ type Screen =
   | 'attendance'
   | 'payContribution'
   | 'payRepayment'
-  | 'reviewRequests';
+  | 'reviewRequests'
+  | 'adminManagement'
+  | 'treasurerManagement';
 type Session = {
   accessToken: string;
   refreshToken: string;
-  user: { id: string; memberId: string; email: string | null; phone: string | null; role: string };
+  user: { id: string; memberId: string; email: string | null; phone: string | null; role: string; walletAddress?: string };
 };
 type Profile = {
   id: string;
@@ -79,10 +94,13 @@ type Profile = {
   email: string | null;
   phone: string | null;
   profileImageUrl: string | null;
+  blockchainAddress?: string | null;
   status: string;
   role: { name: string };
 };
 type Group = {
+  weeklyContributionAmount?: string | null;
+  withdrawalsAllowed?: boolean;
   id: string;
   name: string;
   registrationNo: string | null;
@@ -91,7 +109,7 @@ type Group = {
   contactInfo: string | null;
   status: string;
   createdAt: string;
-  manager: { firstName: string; lastName: string } | null;
+  manager: { id?: string; firstName: string; lastName: string } | null;
 };
 type GroupDetail = Group & {
   statistics: {
@@ -343,18 +361,18 @@ export default function HomeScreen() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
+  useWalletSessionGuard(session?.user.walletAddress, logout);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [identifier, setIdentifier] = useState('');
-  const [openingMetaMask, setOpeningMetaMask] = useState(false);
   const [password, setPassword] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [confirmation, setConfirmation] = useState('');
-  const [role, setRole] = useState<'MEMBER' | 'GROUP_MANAGER'>('MEMBER');
+  const [role, setRole] = useState<AccountRole>('MEMBER');
   const [groupId, setGroupId] = useState('');
   const [memberId, setMemberId] = useState('');
   const [registrationGroups, setRegistrationGroups] = useState<{ id: string; name: string; location: string | null }[]>([]);
@@ -368,6 +386,7 @@ export default function HomeScreen() {
   const [contributions, setContributions] = useState<Contribution[]>([]);
   const [savingsLoading, setSavingsLoading] = useState(false);
   const [contributionAmounts, setContributionAmounts] = useState<Record<string, string>>({});
+  const [contributionMethods, setContributionMethods] = useState<Record<string, string>>({});
   const [contributionDescriptions, setContributionDescriptions] = useState<Record<string, string>>(
     {},
   );
@@ -483,9 +502,19 @@ export default function HomeScreen() {
     if (!session) return;
     setMemberId(session.user.memberId ?? '');
     void loadWorkflowSummary();
-    const timer = setInterval(() => { if (screenRef.current === 'dashboard' && AppState.currentState === 'active') void loadWorkflowSummary(); }, 15000);
-    return () => clearInterval(timer);
-  }, [session?.user.id]);
+    let pending = false;
+    const refresh = async () => {
+      if (pending || screenRef.current !== 'dashboard') return;
+      pending = true;
+      try {
+        if (['ADMIN', 'SUPER_ADMIN'].includes(session.user.role)) await loadAdminDashboard(true);
+        else await loadWorkflowSummary();
+      } finally { pending = false; }
+    };
+    const timer = setInterval(() => { if (AppState.currentState === 'active') void refresh(); }, 15000);
+    const listener = AppState.addEventListener('change', (state) => { if (state === 'active') void refresh(); });
+    return () => { clearInterval(timer); listener.remove(); };
+  }, [session?.user.id, session?.user.role, session?.accessToken]);
   useEffect(() => {
     if (screen !== 'register') return;
     let active = true;
@@ -592,11 +621,13 @@ export default function HomeScreen() {
     }));
   }
 
-  async function loadAdminDashboard() {
+  async function loadAdminDashboard(silent = false) {
     if (!session || !['ADMIN', 'SUPER_ADMIN'].includes(session.user.role)) return;
     const ticket = requestTracker.current.start('adminDashboard');
-    setAdminDashboardLoading(true);
-    setAdminDashboardError(null);
+    if (!silent) {
+      setAdminDashboardLoading(true);
+      setAdminDashboardError(null);
+    }
     try {
       const result = await request<AdminDashboardData>(
         '/admin/dashboard',
@@ -605,13 +636,14 @@ export default function HomeScreen() {
       );
       if (!requestTracker.current.current('adminDashboard', ticket)) return;
       setAdminDashboard(result);
+      setAdminDashboardError(null);
     } catch (error) {
       if (
         !requestTracker.current.current('adminDashboard', ticket) ||
         (error instanceof ApiError && error.cancelled)
       )
         return;
-      setAdminDashboardError(
+      if (!silent) setAdminDashboardError(
         error instanceof Error ? error.message : 'Admin dashboard is unavailable.',
       );
     } finally {
@@ -1169,6 +1201,7 @@ export default function HomeScreen() {
   async function recordContribution(account: SavingsAccount) {
     const contributionAmount = contributionAmounts[account.id] ?? '';
     const contributionDescription = contributionDescriptions[account.id] ?? '';
+    const contributionMethod = contributionMethods[account.id] ?? 'MOBILE_MONEY';
     if (!permissionsRef.current.includes('financial:write'))
       return Alert.alert(
         'Access unavailable',
@@ -1188,6 +1221,7 @@ export default function HomeScreen() {
       account.id,
       contributionAmount,
       contributionDescription,
+      contributionMethod,
     ]);
     setSubmitting(true);
     try {
@@ -1197,7 +1231,7 @@ export default function HomeScreen() {
           savingsAccountId: account.id,
           amount: contributionAmount,
           reference: paymentReference(paymentKey),
-          paymentMethod: 'MOBILE_MONEY',
+          paymentMethod: contributionMethod,
           description: contributionDescription || undefined,
         },
         session.accessToken,
@@ -1866,7 +1900,7 @@ export default function HomeScreen() {
     if (!session || !permissionsRef.current.includes('settings:manage'))
       return Alert.alert(
         'Access unavailable',
-        'System settings are available to super administrators only.',
+        'System settings are available to administrators only.',
       );
     if (!settingKey.trim())
       return Alert.alert('Setting key required', 'Choose a setting to update.');
@@ -1979,7 +2013,8 @@ export default function HomeScreen() {
     }
   }
 
-  async function saveSession(next: Session) {
+  async function saveSession(next: Session, isCurrent: () => boolean = () => true) {
+    if (!isCurrent()) throw new ApiError('Wallet account changed. Sign in again.', 0, [], true);
     if (
       !next?.user ||
       typeof next.user.id !== 'string' ||
@@ -1989,6 +2024,11 @@ export default function HomeScreen() {
     )
       throw new ApiError('The server returned invalid account details. Please try again.', 0);
     await storeTokens(next.accessToken, next.refreshToken);
+    if (!isCurrent()) {
+      const stored = await getStoredTokens();
+      if (stored.accessToken === next.accessToken) await clearTokens();
+      throw new ApiError('Wallet account changed. Sign in again.', 0, [], true);
+    }
     setDashboardLoading(true);
     setSession(next);
     setScreen('dashboard');
@@ -1996,7 +2036,7 @@ export default function HomeScreen() {
 
   async function submitLogin() {
     if (!identifier.trim() || !password)
-      return Alert.alert('Missing details', 'Enter your email or phone number and password.');
+      return Alert.alert('Missing details', 'Enter your member ID, email or phone number and password.');
     setSubmitting(true);
     try {
       await saveSession(await request('/auth/login', { identifier: identifier.trim(), password }));
@@ -2010,6 +2050,21 @@ export default function HomeScreen() {
           ? `${message}\nYour existing account does not need to be recreated. Retry sign-in when the connection returns.`
           : message,
       );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitGoogleLogin() {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const idToken = await googleIdToken();
+      if (!idToken) return;
+      await saveSession(await request<Session>('/auth/google', { idToken }));
+    } catch (error) {
+      if (error instanceof ApiError && error.cancelled) return;
+      Alert.alert('Google sign-in failed', error instanceof Error ? error.message : 'Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -2031,8 +2086,7 @@ export default function HomeScreen() {
       return Alert.alert('Check your details', 'Correct the highlighted fields and try again.');
     setSubmitting(true);
     try {
-      await saveSession(
-        await request('/auth/register', {
+      const registration = await request<Session | { pendingApproval: true; message: string }>('/auth/register', {
           memberId: memberId.trim(),
           firstName: firstName.trim(),
           lastName: lastName.trim(),
@@ -2042,21 +2096,25 @@ export default function HomeScreen() {
           passwordConfirmation: confirmation,
           role,
           groupId: role === 'MEMBER' && groupId.trim() ? groupId.trim() : undefined,
-        }),
-      );
+        });
+      if ('pendingApproval' in registration) {
+        setIdentifier(memberId.trim());
+        setPassword('');
+        setConfirmation('');
+        setScreen('login');
+        Alert.alert('Account awaiting approval', registration.message);
+      } else {
+        await saveSession(registration);
+      }
     } catch (error) {
       if (error instanceof ApiError && error.cancelled) return;
       if (error instanceof ApiError && error.status === 409) {
-        if (error.message.includes('Member ID')) {
-          setFormErrors((current) => ({ ...current, memberId: error.message }));
-          Alert.alert('Member ID already used', error.message);
-          return;
-        }
-        setIdentifier(email.trim() || phone.trim());
+        setIdentifier(error.message.includes('Member ID') ? memberId.trim() : email.trim() || phone.trim());
+        setPassword('');
         setScreen('login');
         Alert.alert(
           'Account already registered',
-          'Sign in using your existing email or phone and password. Use Forgot password if you need to reset it.',
+          'An account with these details already exists. Sign in using your original member ID, email or phone and password. Use Forgot password with your email or phone if you need to reset it.',
         );
         return;
       }
@@ -2090,9 +2148,13 @@ export default function HomeScreen() {
   }
 
   async function logout() {
+    invalidateWalletRequest();
+    selectWallet('');
     const { refreshToken } = await getStoredTokens();
     await clearTokens();
     resetLocalSession();
+    // Clear the app immediately; a disconnected relay must not block logout.
+    void endWalletConnection().catch(() => undefined);
     if (refreshToken) {
       try {
         await request('/auth/logout', { refreshToken });
@@ -2146,6 +2208,7 @@ export default function HomeScreen() {
     setRepaymentAmounts({});
     paymentReferences.current.clear();
     setContributionAmounts({});
+    setContributionMethods({});
     setLoanAmount('');
     setSession(null);
     setProfile(null);
@@ -2234,16 +2297,22 @@ export default function HomeScreen() {
   if (loading || screen === 'splash') {
     return (
       <View style={styles.splashContainer}>
-        <View style={styles.logoBadge}>
-          <Text style={styles.logoText}>RM</Text>
-        </View>
-        <Text style={[styles.brand, { color: '#FFFFFF' }]}>Rural Microfinance</Text>
-        <Text style={styles.splashSubtext}>Community growth made simple</Text>
+        <StatusBar style="light" />
+        <Image
+          source={
+            // Metro requires a static require for bundled image assets.
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            require('../assets/splash.png')
+          }
+          style={styles.splashImage}
+          resizeMode="contain"
+          accessibilityLabel="Rural Community Microfinance"
+        />
         <ActivityIndicator
           accessibilityLabel="Loading"
           size="large"
-          color="#FFFFFF"
-          style={{ marginTop: 24 }}
+          color="#EAB85C"
+          style={styles.splashSpinner}
         />
       </View>
     );
@@ -2299,9 +2368,23 @@ export default function HomeScreen() {
     );
   }
 
+  if (screen === 'treasurerManagement' && session && ['TREASURER', 'ADMIN', 'SUPER_ADMIN'].includes(session.user.role)) {
+    return <TreasurerConsole onBack={() => { setScreen('dashboard'); void loadWorkflowSummary(); }} onRecordContribution={() => { setScreen('contributions'); void loadSavings(1, false, false); }} onVerifyContributions={() => setScreen('reviewRequests')} onReports={() => void loadReports()} onHistory={() => void loadTransactions()} />;
+  }
+
+  if (screen === 'adminManagement' && session && ['ADMIN', 'SUPER_ADMIN'].includes(session.user.role)) {
+    return <AdminConsole userId={session.user.id} onBack={() => { setScreen('dashboard'); void loadAdminDashboard(); }} onLoans={() => void loadLoans()} onContributions={() => setScreen('reviewRequests')} onReports={() => void loadReports()} />;
+  }
+
+  if (screen === 'memberSpace' && session && session.user.role === 'MEMBER') {
+    return <MemberSpace onBack={() => { setScreen('dashboard'); void loadWorkflowSummary(); }} onPay={() => setScreen('payContribution')} onRepay={() => setScreen('payRepayment')} onApply={() => setScreen('loanApplication')} onHistory={() => { void loadSavings(); }} onSavings={() => { void loadSavings(); }} onNotifications={() => { void loadNotifications(); }} />;
+  }
+
   if (screen === 'dashboard' && session) {
     const isAdminDashboard = ['ADMIN', 'SUPER_ADMIN'].includes(session.user.role);
     const quickActions = [
+      ...(session.user.role === 'MEMBER' ? [{ label: 'Member workspace', permission: undefined, onPress: () => setScreen('memberSpace') }] : []),
+      ...(['TREASURER', 'ADMIN', 'SUPER_ADMIN'].includes(session.user.role) ? [{ label: session.user.role === 'TREASURER' ? 'Treasurer workspace' : 'Financial operations', permission: undefined, onPress: () => setScreen('treasurerManagement') }] : []),
       { label: 'Profile', permission: undefined, onPress: () => setScreen('profile') },
       { label: 'Groups', permission: 'groups:read', onPress: () => setScreen('groups') },
       { label: 'Savings', permission: 'financial:read', onPress: () => void loadSavings() },
@@ -2421,11 +2504,15 @@ export default function HomeScreen() {
           (action) => !['Savings', 'Loans', 'Notifications', 'Blockchain'].includes(action.label),
         )}
       >
+        {session.user.walletAddress && <WalletAuth sessionWallet={session.user.walletAddress} onEndSession={logout} />}
         {isAdminDashboard && (
           <>
             <Text accessibilityRole="header" aria-level={2} style={styles.sectionTitle}>
               Admin dashboard
             </Text>
+            <Pressable accessibilityRole="button" style={styles.primaryButton} onPress={() => setScreen('adminManagement')}>
+              <Text style={styles.primaryText}>Manage platform</Text>
+            </Pressable>
             <AdminDashboardPanel
               data={adminDashboard}
               loading={dashboardLoading || adminDashboardLoading}
@@ -2497,7 +2584,8 @@ export default function HomeScreen() {
           value={profile.profileImageUrl ?? ''}
           onChangeText={(profileImageUrl) => setProfile({ ...profile, profileImageUrl })}
         />
-        <Text style={styles.detail}>{profile.role.name.replace('_', ' ')}</Text>
+        <Text style={styles.detail}>{roleLabel(profile.role.name)}</Text>
+        <WalletAuth linkToken={session?.accessToken} linkedAddress={profile.blockchainAddress} sessionWallet={session?.user.walletAddress} onEndSession={logout} />
         <Pressable
           accessibilityRole="button"
           style={styles.secondaryButton}
@@ -2749,9 +2837,9 @@ export default function HomeScreen() {
             <Text style={styles.detail}>
               {account.groupMember.group.name} · {account.groupMember.memberNumber}
             </Text>
-            <Text style={styles.status}>Balance: GHS {String(account.balance)}</Text>
+            <Text style={styles.status}>Balance: SLE {String(account.balance)}</Text>
             <Text style={styles.detail}>
-              Statement: {statementTotals[account.id]?.count ?? 'Unavailable'} contributions · GHS{' '}
+              Statement: {statementTotals[account.id]?.count ?? 'Unavailable'} contributions · SLE{' '}
               {statementTotals[account.id]
                 ? String(statementTotals[account.id].total)
                 : 'Unavailable'}
@@ -2759,7 +2847,7 @@ export default function HomeScreen() {
             {screen === 'contributions' && permissions.includes('financial:write') && (
               <>
                 <Field
-                  label="Contribution amount (GHS)"
+                  label="Contribution amount (SLE)"
                   value={contributionAmounts[account.id] ?? ''}
                   onChangeText={(value) =>
                     setContributionAmounts((values) => ({ ...values, [account.id]: value }))
@@ -2773,6 +2861,8 @@ export default function HomeScreen() {
                     setContributionDescriptions((values) => ({ ...values, [account.id]: value }))
                   }
                 />
+                <Text style={styles.detail}>Payment method</Text>
+                <View style={styles.attendanceOptions}>{['CASH', 'MOBILE_MONEY', 'BANK_TRANSFER', 'CARD', 'OTHER'].map((method) => <Pressable key={method} accessibilityRole="radio" accessibilityLabel={method.replaceAll('_', ' ')} accessibilityState={{ checked: (contributionMethods[account.id] ?? 'MOBILE_MONEY') === method, disabled: submitting }} disabled={submitting} style={styles.secondaryButton} onPress={() => setContributionMethods((values) => ({ ...values, [account.id]: method }))}><Text style={styles.secondaryText}>{(contributionMethods[account.id] ?? 'MOBILE_MONEY') === method ? '● ' : '○ '}{method.replaceAll('_', ' ')}</Text></Pressable>)}</View>
                 <Pressable
                   accessibilityRole="button"
                   style={[styles.primaryButton, submitting && styles.disabled]}
@@ -2805,12 +2895,12 @@ export default function HomeScreen() {
               value={historySearch}
               onChangeText={setHistorySearch}
             />
-            <Field
-              label="From date (YYYY-MM-DD)"
+            <DateField
+              label="From date"
               value={historyFrom}
               onChangeText={setHistoryFrom}
             />
-            <Field label="To date (YYYY-MM-DD)" value={historyTo} onChangeText={setHistoryTo} />
+            <DateField label="To date" value={historyTo} onChangeText={setHistoryTo} />
             <Pressable
               accessibilityRole="button"
               style={styles.secondaryButton}
@@ -2826,7 +2916,7 @@ export default function HomeScreen() {
             )}
             {contributions.map((item) => (
               <View key={item.id} style={styles.historyItem}>
-                <Text style={styles.groupName}>GHS {String(item.amount)}</Text>
+                <Text style={styles.groupName}>SLE {String(item.amount)}</Text>
                 <Text style={styles.detail}>
                   {new Date(item.contributionDate).toLocaleDateString()} ·{' '}
                   {item.paymentMethod.replace('_', ' ')}
@@ -2843,7 +2933,7 @@ export default function HomeScreen() {
     );
 
   if (['payContribution','payRepayment','reviewRequests'].includes(screen) && session)
-    return <PaymentWorkflow token={session.accessToken} mode={screen === 'reviewRequests' ? 'REVIEW' : screen === 'payRepayment' ? 'REPAYMENT' : 'CONTRIBUTION'} initialEmail={session.user.email} onBack={() => { void loadWorkflowSummary(); setScreen('dashboard'); }} onChanged={() => { void loadWorkflowSummary(); }} onApplyLoan={() => setScreen('loanApplication')} />;
+    return <PaymentWorkflow token={session.accessToken} canManageLoans={permissions.includes('loans:manage')} mode={screen === 'reviewRequests' ? 'REVIEW' : screen === 'payRepayment' ? 'REPAYMENT' : 'CONTRIBUTION'} initialEmail={session.user.email} onBack={() => { void loadWorkflowSummary(); setScreen('dashboard'); }} onChanged={() => { void loadWorkflowSummary(); }} onApplyLoan={() => setScreen('loanApplication')} />;
 
   if (screen === 'loans' && session)
     return (
@@ -2915,7 +3005,7 @@ export default function HomeScreen() {
             </Text>
             <Field label="Member ID" value={memberId} onChangeText={setMemberId} />
             <Field
-              label="Loan amount (GHS)"
+              label="Loan amount (SLE)"
               value={loanAmount}
               onChangeText={setLoanAmount}
               keyboardType="decimal-pad"
@@ -2927,10 +3017,11 @@ export default function HomeScreen() {
               onChangeText={setLoanDuration}
               keyboardType="number-pad"
             />
-            <Field
-              label="Application date (YYYY-MM-DD, optional)"
+            <DateField
+              label="Application date (optional)"
               value={loanApplicationDate}
               onChangeText={setLoanApplicationDate}
+              disabled={submitting}
             />
             <Field
               label="Supporting information (optional)"
@@ -2964,11 +3055,11 @@ export default function HomeScreen() {
                     {loan.loanReference} · {loan.status}
                   </Text>
                   <Text style={styles.detail}>
-                    Principal: GHS {String(loan.principalAmount)} · Interest:{' '}
+                    Principal: SLE {String(loan.principalAmount)} · Interest:{' '}
                     {String(loan.interestRate)}%
                   </Text>
                   <Text style={styles.detail}>
-                    Outstanding: GHS {String(loan.outstandingBalance)} · {loan.termMonths} months
+                    Outstanding: SLE {String(loan.outstandingBalance)} · {loan.termMonths} months
                   </Text>
                   <Text style={styles.groupMeta}>
                     {loan.startDate
@@ -2992,7 +3083,7 @@ export default function HomeScreen() {
                     Number(loan.outstandingBalance) > 0 && (
                       <>
                         <Field
-                          label={`Repayment amount (GHS) · max ${String(loan.outstandingBalance)}`}
+                          label={`Repayment amount (SLE) · max ${String(loan.outstandingBalance)}`}
                           value={repaymentAmounts[loan.id] ?? ''}
                           onChangeText={(value) =>
                             setRepaymentAmounts((values) => ({ ...values, [loan.id]: value }))
@@ -3027,13 +3118,13 @@ export default function HomeScreen() {
             {repayments.map((repayment) => (
               <View key={repayment.id} style={styles.historyItem}>
                 <Text style={styles.groupName}>
-                  GHS {String(repayment.amount)} · {repayment.status}
+                  SLE {String(repayment.amount)} · {repayment.status}
                 </Text>
                 <Text style={styles.detail}>
                   {repayment.loan.loanReference} · {new Date(repayment.paidAt).toLocaleDateString()}
                 </Text>
                 <Text style={styles.groupMeta}>
-                  Remaining: GHS {String(repayment.loan.outstandingBalance)}
+                  Remaining: SLE {String(repayment.loan.outstandingBalance)}
                   {repayment.loan.dueDate
                     ? ` · Due: ${new Date(repayment.loan.dueDate).toLocaleDateString()}`
                     : ''}{' '}
@@ -3101,6 +3192,7 @@ export default function HomeScreen() {
         <Text style={styles.detail}>Reference: {selectedGroup.registrationNo ?? 'Not set'}</Text>
         <Text style={styles.detail}>Location: {selectedGroup.location ?? 'Not set'}</Text>
         <Text style={styles.detail}>Contact: {selectedGroup.contactInfo ?? 'Not set'}</Text>
+        {session && permissions.includes('groups:manage') && (['ADMIN', 'SUPER_ADMIN'].includes(session.user.role) || selectedGroup.manager?.id === session.user.id) && <GroupMemberPolicy key={selectedGroup.id} groupId={selectedGroup.id} weeklyAmount={selectedGroup.weeklyContributionAmount} withdrawalsAllowed={selectedGroup.withdrawalsAllowed} />}
         <Text style={styles.detail}>
           Administrator:{' '}
           {selectedGroup.manager
@@ -3126,10 +3218,10 @@ export default function HomeScreen() {
           <Stat label="Meetings" value={`${selectedGroup.statistics.scheduledMeetings}`} />
         </View>
         <Text style={styles.detail}>
-          Total savings: GHS {String(selectedGroup.statistics.totalSavings)}
+          Total savings: SLE {String(selectedGroup.statistics.totalSavings)}
         </Text>
         <Text style={styles.detail}>
-          Outstanding loans: GHS {String(selectedGroup.statistics.outstandingLoanBalance)}
+          Outstanding loans: SLE {String(selectedGroup.statistics.outstandingLoanBalance)}
         </Text>
         <Pressable
           accessibilityRole="button"
@@ -3338,13 +3430,13 @@ export default function HomeScreen() {
           <Text style={styles.detail}>Email: {selectedMember.user.email ?? 'Not provided'}</Text>
           <Text style={styles.detail}>Phone: {selectedMember.user.phone ?? 'Not provided'}</Text>
           <Text style={styles.detail}>
-            Savings balance: GHS{' '}
+            Savings balance: SLE{' '}
             {selectedMember.savingsBalance == null
               ? 'Unavailable'
               : String(selectedMember.savingsBalance)}
           </Text>
           <Text style={styles.detail}>
-            Active loan balance: GHS{' '}
+            Active loan balance: SLE{' '}
             {selectedMember.loanBalance == null
               ? 'Unavailable'
               : String(selectedMember.loanBalance)}
@@ -3382,12 +3474,12 @@ export default function HomeScreen() {
           value={transactionStatus}
           onChangeText={setTransactionStatus}
         />
-        <Field
-          label="From date (YYYY-MM-DD)"
+        <DateField
+          label="From date"
           value={transactionFrom}
           onChangeText={setTransactionFrom}
         />
-        <Field label="To date (YYYY-MM-DD)" value={transactionTo} onChangeText={setTransactionTo} />
+        <DateField label="To date" value={transactionTo} onChangeText={setTransactionTo} />
         <Pressable
           accessibilityRole="button"
           style={styles.primaryButton}
@@ -3414,7 +3506,7 @@ export default function HomeScreen() {
               {item.type.replaceAll('_', ' ')} · {item.status}
             </Text>
             <Text style={styles.detail}>
-              GHS {String(item.amount)} {item.currency} · {item.reference}
+              SLE {String(item.amount)} · {item.reference}
             </Text>
             <Text style={styles.groupMeta}>
               {new Date(item.occurredAt).toLocaleString()} · {item.group?.name ?? 'No group'}
@@ -3463,8 +3555,8 @@ export default function HomeScreen() {
         <Text accessibilityRole="header" aria-level={2} style={styles.sectionTitle}>
           Filters
         </Text>
-        <Field label="From date (YYYY-MM-DD)" value={reportFrom} onChangeText={setReportFrom} />
-        <Field label="To date (YYYY-MM-DD)" value={reportTo} onChangeText={setReportTo} />
+        <DateField label="From date" value={reportFrom} onChangeText={setReportFrom} />
+        <DateField label="To date" value={reportTo} onChangeText={setReportTo} />
         <Field
           label="Group ID (optional UUID)"
           value={reportGroupId}
@@ -3517,12 +3609,12 @@ export default function HomeScreen() {
               Savings
             </Text>
             <View style={styles.statsGrid}>
-              <Stat label="Total balance" value={`GHS ${String(report.savings.totalSavings)}`} />
+              <Stat label="Total balance" value={`SLE ${String(report.savings.totalSavings)}`} />
             </View>
             {report.savings.monthlyContributions.map((item) => (
               <View key={`contrib-${item.month}`} style={styles.historyItem}>
                 <Text style={styles.groupName}>{item.month}</Text>
-                <Text style={styles.detail}>Contributions: GHS {String(item.total)}</Text>
+                <Text style={styles.detail}>Contributions: SLE {String(item.total)}</Text>
               </View>
             ))}
             <Text accessibilityRole="header" aria-level={2} style={styles.sectionTitle}>
@@ -3537,7 +3629,7 @@ export default function HomeScreen() {
                     {item.name} · {item.memberNumber}
                   </Text>
                   <Text style={styles.groupMeta}>{item.groupName}</Text>
-                  <Text style={styles.detail}>Balance: GHS {String(item.savings)}</Text>
+                  <Text style={styles.detail}>Balance: SLE {String(item.savings)}</Text>
                 </View>
               ))
             )}
@@ -3551,22 +3643,22 @@ export default function HomeScreen() {
               <Stat label="Active" value={String(report.loans.activeLoans)} />
               <Stat label="Completed" value={String(report.loans.completedLoans)} />
               <Stat label="Defaulted" value={String(report.loans.defaultedLoans)} />
-              <Stat label="Outstanding" value={`GHS ${String(report.loans.outstandingBalance)}`} />
+              <Stat label="Outstanding" value={`SLE ${String(report.loans.outstandingBalance)}`} />
             </View>
             <Text accessibilityRole="header" aria-level={2} style={styles.sectionTitle}>
               Repayments
             </Text>
             <View style={styles.statsGrid}>
-              <Stat label="Total" value={`GHS ${String(report.repayments.totalRepayments)}`} />
+              <Stat label="Total" value={`SLE ${String(report.repayments.totalRepayments)}`} />
               <Stat
                 label="Outstanding"
-                value={`GHS ${String(report.repayments.outstandingRepayments)}`}
+                value={`SLE ${String(report.repayments.outstandingRepayments)}`}
               />
             </View>
             {report.repayments.monthlyRepayments.map((item) => (
               <View key={`repayment-${item.month}`} style={styles.historyItem}>
                 <Text style={styles.groupName}>{item.month}</Text>
-                <Text style={styles.detail}>Repayments: GHS {String(item.total)}</Text>
+                <Text style={styles.detail}>Repayments: SLE {String(item.total)}</Text>
               </View>
             ))}
             <Text accessibilityRole="header" aria-level={2} style={styles.sectionTitle}>
@@ -3716,7 +3808,7 @@ export default function HomeScreen() {
           </Text>
         )}
         <Text style={styles.detail}>
-          Amounts are shown in Ghana cedis (GHS). Use your phone settings to increase text size.
+          Amounts are shown in Sierra Leone leones (SLE). Use your phone settings to increase text size.
           Pull down to refresh, or use Retry after a connection error.
         </Text>
         <Pressable
@@ -3791,21 +3883,6 @@ export default function HomeScreen() {
       </ScrollView>
     );
 
-  async function launchMetaMask() {
-    if (openingMetaMask || submitting) return;
-    setOpeningMetaMask(true);
-    try {
-      await openMetaMask();
-    } catch (error) {
-      Alert.alert(
-        'MetaMask unavailable',
-        error instanceof Error ? error.message : 'Please try again.',
-      );
-    } finally {
-      setOpeningMetaMask(false);
-    }
-  }
-
   const isRegister = screen === 'register';
   const isForgot = screen === 'forgot';
   return (
@@ -3844,26 +3921,8 @@ export default function HomeScreen() {
             keyboardType="phone-pad"
           />
           <Text style={styles.label}>Role</Text>
-          <View style={styles.roleRow}>
-            <Pressable
-              accessibilityRole="button"
-              style={[styles.roleOption, role === 'MEMBER' && styles.roleSelected]}
-              onPress={() => setRole('MEMBER')}
-            >
-              <Text style={[styles.roleText, role === 'MEMBER' && styles.roleTextSelected]}>
-                Member
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              style={[styles.roleOption, role === 'GROUP_MANAGER' && styles.roleSelected]}
-              onPress={() => setRole('GROUP_MANAGER')}
-            >
-              <Text style={[styles.roleText, role === 'GROUP_MANAGER' && styles.roleTextSelected]}>
-                Group manager
-              </Text>
-            </Pressable>
-          </View>
+          <RoleDropdown value={role} disabled={submitting} onChange={(value) => { setRole(value); setGroupId(''); }} />
+          {role !== 'MEMBER' && <Text style={styles.detail}>An existing administrator must approve this account before you can sign in.</Text>}
           {role === 'MEMBER' && (
             <>
               <Text style={styles.label}>Community group</Text>
@@ -3875,7 +3934,7 @@ export default function HomeScreen() {
       )}
       {!isRegister && (
         <Field
-          label="Email address or phone number"
+          label={isForgot ? 'Email address or phone number' : 'Member ID, email address or phone number'}
           value={identifier}
           onChangeText={setIdentifier}
           keyboardType="email-address"
@@ -3919,21 +3978,13 @@ export default function HomeScreen() {
       </Pressable>
       {!isRegister && !isForgot && (
         <>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Open MetaMask"
-            accessibilityHint="Opens your MetaMask wallet app."
-            style={[styles.secondaryButton, (openingMetaMask || submitting) && styles.disabled]}
-            disabled={openingMetaMask || submitting}
-            onPress={() => void launchMetaMask()}
-          >
-            <Text style={styles.secondaryText}>
-              {openingMetaMask ? 'Opening MetaMask...' : 'Open MetaMask'}
-            </Text>
-          </Pressable>
-          <Text style={styles.detail}>
-            Open your wallet. Use email or phone to sign in to this account.
-          </Text>
+          {Platform.OS === 'android' && (
+            <>
+              <GoogleSignInButton disabled={submitting} onPress={() => void submitGoogleLogin()} />
+              <Text style={styles.detail}>Use the Google email registered on your member account.</Text>
+            </>
+          )}
+          <WalletAuth onSession={saveSession} onBusyChange={setSubmitting} disabled={submitting} />
           <Pressable accessibilityRole="button" onPress={() => setScreen('forgot')}>
             <Text style={styles.link}>Forgot password?</Text>
           </Pressable>
@@ -4259,22 +4310,12 @@ const styles = StyleSheet.create({
   },
   splashContainer: {
     flex: 1,
-    backgroundColor: '#0F766E',
+    backgroundColor: '#003D32',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
   },
-  logoBadge: {
-    width: 96,
-    height: 96,
-    borderRadius: 24,
-    backgroundColor: '#CCFBF1',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-  },
-  logoText: { color: '#0F766E', fontSize: 32, fontWeight: '800' },
-  splashSubtext: { color: '#FFFFFF', fontSize: 16, fontWeight: '600', opacity: 0.9 },
+  splashImage: { width: '100%', height: '100%' },
+  splashSpinner: { position: 'absolute', bottom: 24 },
   onboardingContainer: {
     flexGrow: 1,
     width: '100%',

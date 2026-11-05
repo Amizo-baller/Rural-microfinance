@@ -44,7 +44,7 @@ export class ListLoanApplicationsDto {
 }
 
 export class CreateApprovedLoanDto {
-  @Matches(/^\d+(\.\d{1,4})?$/) interestRate!: string;
+  @Matches(/^\d{1,3}(\.\d{1,4})?$/) interestRate!: string;
   @IsDateString() startDate!: string;
   @IsDateString() dueDate!: string;
 }
@@ -85,5 +85,5 @@ export class ReportsFilterDto {
 }
 
 export class SettingKeyDto {
-  @IsString() @MinLength(2) @MaxLength(100) key!: string;
+  @IsString() @MinLength(2) @MaxLength(100) @Matches(/^[A-Za-z0-9_.-]+$/) key!: string;
 }

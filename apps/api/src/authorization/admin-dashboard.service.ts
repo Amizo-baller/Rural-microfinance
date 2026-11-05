@@ -52,10 +52,10 @@ export class AdminDashboardService {
       this.prisma.user.count(),
       this.prisma.communityGroup.count(),
       this.prisma.groupMember.count(),
-      this.prisma.savingsAccount.aggregate({ _sum: { balance: true } }),
+      this.prisma.savingsAccount.aggregate({ where: { currency: 'SLE' }, _sum: { balance: true } }),
       this.prisma.loan.count(),
       this.prisma.loan.aggregate({ where: { outstandingBalance: { gt: 0 } }, _sum: { outstandingBalance: true } }),
-      this.prisma.loanRepayment.aggregate({ _sum: { amount: true } }),
+      this.prisma.loanRepayment.aggregate({ where: { status: 'CONFIRMED' }, _sum: { amount: true } }),
       this.prisma.transaction.findMany({
         orderBy: { occurredAt: 'desc' },
         take: 8,
@@ -101,11 +101,11 @@ export class AdminDashboardService {
         _count: { _all: true },
       }),
       this.prisma.contribution.findMany({
-        where: { contributionDate: { gte: new Date(new Date().getFullYear(), new Date().getMonth() - 5, 1) } },
+        where: { status: 'CONFIRMED', contributionDate: { gte: new Date(new Date().getFullYear(), new Date().getMonth() - 5, 1) } },
         select: { amount: true, contributionDate: true },
       }),
       this.prisma.loanRepayment.findMany({
-        where: { paidAt: { gte: new Date(new Date().getFullYear(), new Date().getMonth() - 5, 1) } },
+        where: { status: 'CONFIRMED', paidAt: { gte: new Date(new Date().getFullYear(), new Date().getMonth() - 5, 1) } },
         select: { amount: true, paidAt: true },
       }),
     ]);

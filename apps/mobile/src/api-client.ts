@@ -15,6 +15,9 @@ const LEGACY_REFRESH_KEY = 'auth_refresh_token';
 const PUBLIC_AUTH = new Set([
   '/auth/registration-groups',
   '/auth/login',
+  '/auth/google',
+  '/auth/wallet/challenge',
+  '/auth/wallet/login',
   '/auth/register',
   '/auth/forgot-password',
   '/auth/reset-password',

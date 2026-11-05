@@ -94,7 +94,11 @@ export class BlockchainService {
       select: { id: true, reference: true, type: true, amount: true, currency: true, metadata: true, groupId: true, groupMemberId: true, occurredAt: true, status: true, description: true, blockchainHash: true, groupMember: { select: { userId: true } }, blockchainTransaction: { select: { transactionHash: true } } },
     });
     if (!transaction) throw new NotFoundException('Financial transaction not found');
-    if (!['ADMIN', 'SUPER_ADMIN', 'TREASURER', 'AUDITOR', 'LOAN_OFFICER'].includes(actor.role) && transaction.groupMember?.userId !== actor.sub) throw new NotFoundException('Financial transaction not found');
+    if (!['ADMIN', 'SUPER_ADMIN', 'TREASURER', 'AUDITOR', 'LOAN_OFFICER'].includes(actor.role) && transaction.groupMember?.userId !== actor.sub) {
+      const assigned = actor.role === 'GROUP_MANAGER' && transaction.groupId
+        ? await this.prisma.communityGroup.findFirst({ where: { id: transaction.groupId, managerId: actor.sub }, select: { id: true } }) : null;
+      if (!assigned) throw new NotFoundException('Financial transaction not found');
+    }
     const databaseHash = this.hashDatabaseRecord(transaction);
     const baseResult = {
       transactionReference: transaction.reference,

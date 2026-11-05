@@ -6,6 +6,7 @@ import { CreateGroupDto, ListGroupsDto, UpdateGroupDto } from './dto';
 type Actor = { sub: string; role: string };
 
 const groupSelect = {
+  weeklyContributionAmount: true, withdrawalsAllowed: true,
   id: true, name: true, registrationNo: true, description: true, location: true, contactInfo: true,
   status: true, createdAt: true, updatedAt: true,
   manager: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
@@ -40,9 +41,13 @@ export class GroupsService {
     if (!this.isPlatformAdmin(actor) && actor.sub !== dto.managerId) throw new ForbiddenException('Group managers can create only groups assigned to themselves');
     await this.managerOrThrow(dto.managerId);
     try {
-      return await this.prisma.communityGroup.create({
-        data: { name: dto.name.trim(), registrationNo: dto.registrationNo.trim(), location: dto.location.trim(), contactInfo: dto.contactInfo.trim(), description: dto.description?.trim(), managerId: dto.managerId },
+      return await this.prisma.$transaction(async (tx) => {
+      const group = await tx.communityGroup.create({
+        data: { name: dto.name.trim(), registrationNo: dto.registrationNo.trim(), location: dto.location.trim(), contactInfo: dto.contactInfo.trim(), description: dto.description?.trim(), managerId: dto.managerId, weeklyContributionAmount: dto.weeklyContributionAmount, withdrawalsAllowed: dto.withdrawalsAllowed },
         select: groupSelect,
+      });
+      await tx.auditLog.create({ data: { userId: actor.sub, action: 'GROUP_CREATED', entityType: 'CommunityGroup', entityId: group.id, newValues: { name: group.name, managerId: dto.managerId, ...(dto.weeklyContributionAmount !== undefined ? { weeklyContributionAmount: dto.weeklyContributionAmount } : {}) } } });
+      return group;
       });
     } catch (error) {
       if (typeof error === 'object' && error && 'code' in error && error.code === 'P2002') throw new ConflictException('A group with this name or registration number already exists');
@@ -86,11 +91,17 @@ export class GroupsService {
       await this.managerOrThrow(dto.managerId);
     }
     try {
-      return await this.prisma.communityGroup.update({ where: { id }, data: {
+      return await this.prisma.$transaction(async (tx) => {
+      const group = await tx.communityGroup.update({ where: { id }, data: {
+        ...(dto.weeklyContributionAmount !== undefined ? { weeklyContributionAmount: dto.weeklyContributionAmount } : {}),
+        ...(dto.withdrawalsAllowed !== undefined ? { withdrawalsAllowed: dto.withdrawalsAllowed } : {}),
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}), ...(dto.registrationNo !== undefined ? { registrationNo: dto.registrationNo.trim() } : {}),
         ...(dto.location !== undefined ? { location: dto.location.trim() } : {}), ...(dto.contactInfo !== undefined ? { contactInfo: dto.contactInfo.trim() } : {}),
         ...(dto.description !== undefined ? { description: dto.description.trim() } : {}), ...(dto.managerId !== undefined ? { managerId: dto.managerId } : {}),
       }, select: groupSelect });
+      await tx.auditLog.create({ data: { userId: actor.sub, action: 'GROUP_UPDATED', entityType: 'CommunityGroup', entityId: id, newValues: { ...dto } } });
+      return group;
+      });
     } catch (error) {
       if (typeof error === 'object' && error && 'code' in error && error.code === 'P2002') throw new ConflictException('A group with this name or registration number already exists');
       throw error;
@@ -99,6 +110,10 @@ export class GroupsService {
 
   async updateStatus(id: string, status: CommunityGroupStatus, actor: Actor) {
     await this.assertCanManage(id, actor);
-    return this.prisma.communityGroup.update({ where: { id }, data: { status }, select: groupSelect });
+    return this.prisma.$transaction(async (tx) => {
+      const group = await tx.communityGroup.update({ where: { id }, data: { status }, select: groupSelect });
+      await tx.auditLog.create({ data: { userId: actor.sub, action: 'GROUP_STATUS_CHANGED', entityType: 'CommunityGroup', entityId: id, newValues: { status } } });
+      return group;
+    });
   }
 }

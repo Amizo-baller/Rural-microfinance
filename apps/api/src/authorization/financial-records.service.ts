@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, Injectable, NotFoundException } 
 import { Prisma, TransactionStatus, TransactionType } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { CorrectFinancialRecordDto, ListFinancialRecordsDto } from './dto';
+import { hasPermission } from '../auth/authorization';
 
 type Actor = { sub: string; role: string };
 
@@ -12,7 +13,7 @@ export class FinancialRecordsService {
   private hasFullAccess(actor: Actor) { return ['ADMIN', 'SUPER_ADMIN', 'TREASURER', 'AUDITOR'].includes(actor.role); }
 
   private whereScope(actor: Actor): Prisma.TransactionWhereInput {
-    return this.hasFullAccess(actor) ? {} : { groupMember: { userId: actor.sub } };
+    return this.hasFullAccess(actor) ? {} : actor.role === 'GROUP_MANAGER' ? { group: { managerId: actor.sub } } : { groupMember: { userId: actor.sub } };
   }
 
   async list(query: ListFinancialRecordsDto, actor: Actor) {
@@ -37,13 +38,13 @@ export class FinancialRecordsService {
   }
 
   async get(id: string, actor: Actor) {
-    const transaction = await this.prisma.transaction.findFirst({ where: { id, ...this.whereScope(actor) }, include: { group: true, groupMember: { include: { user: true } }, blockchainTransaction: true } });
+    const transaction = await this.prisma.transaction.findFirst({ where: { id, ...this.whereScope(actor) }, include: { group: true, groupMember: { include: { user: { select: { id: true, memberId: true, firstName: true, lastName: true } } } }, blockchainTransaction: true } });
     if (!transaction) throw new NotFoundException('Financial transaction not found');
     return transaction;
   }
 
   async correct(id: string, dto: CorrectFinancialRecordDto, actor: Actor) {
-    if (!this.hasFullAccess(actor)) throw new ForbiddenException('Only authorized financial administrators can correct transactions');
+    if (!this.hasFullAccess(actor) || !hasPermission(actor.role, 'financial:write')) throw new ForbiddenException('Only authorized financial administrators can correct transactions');
     const amount = new Prisma.Decimal(dto.amount);
     if (amount.lessThanOrEqualTo(0)) throw new ConflictException('Correction amount must be positive');
     return this.prisma.$transaction(async (tx) => {

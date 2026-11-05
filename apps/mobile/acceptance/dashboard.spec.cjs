@@ -16,7 +16,7 @@ test.beforeEach(async ({ page }) => {
 async function login(page, account, endpoint) {
   await page.goto('/?signIn=1', { waitUntil: 'domcontentloaded' });
   await page
-    .getByLabel('Email address or phone number', { exact: true })
+    .getByLabel(/^(Member ID, email address or phone number|Email address or phone number)$/)
     .fill(fixture()[account].identifier);
   await page.getByLabel('Password', { exact: true }).fill(fixture().password);
   const actualSummary = page.waitForResponse(

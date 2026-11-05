@@ -44,7 +44,8 @@
     "fast-uri": "^3.1.8",
     "image-size": "^2.0.4",
     "postcss": "^8.5.28",
-    "query-string": "^9.5.1"
+    "query-string": "^9.5.1",
+    "react-native-reanimated": "4.5.1"
   },
   "allowScripts": {
     "@prisma/client@6.19.3": true,
